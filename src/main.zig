@@ -1,0 +1,62 @@
+//! Scout command-line entry point.
+
+const std = @import("std");
+const vaxis = @import("vaxis");
+
+const App = @import("App.zig");
+const cli = @import("cli.zig");
+
+const STDIO_BUFFER_BYTES = 1024;
+
+pub const panic = vaxis.Panic.call;
+pub const std_options: std.Options = .{
+    .log_scope_levels = &.{
+        .{ .scope = .vaxis, .level = .err },
+        .{ .scope = .vaxis_parser, .level = .err },
+    },
+};
+
+pub fn main(init: std.process.Init) !void {
+    const arena = init.arena.allocator();
+    const app: App = .init(arena, init.io, init.environ_map);
+
+    var stderr_buffer: [STDIO_BUFFER_BYTES]u8 = undefined;
+    var stdout_buffer: [STDIO_BUFFER_BYTES]u8 = undefined;
+    var stderr_writer = std.Io.File.stderr().writer(init.io, &stderr_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
+
+    const args = try init.minimal.args.toSlice(arena);
+    const cli_result = cli.parse(args) catch |err| {
+        try cli.print_error(&stderr_writer.interface, err);
+        try stderr_writer.interface.flush();
+        std.process.exit(2);
+    };
+
+    if (cli_result.command == .help) {
+        try stdout_writer.interface.writeAll(cli.usage);
+        try stdout_writer.interface.flush();
+        return;
+    }
+
+    if (cli_result.command == .list) {
+        try app.write_project_names(cli_result.root_path, &stdout_writer.interface);
+        try stdout_writer.interface.flush();
+        return;
+    }
+
+    if (cli_result.no_tmux) {
+        const project_path = try app.pick_path(cli_result.root_path) orelse return;
+        try stdout_writer.interface.writeAll(project_path);
+        try stdout_writer.interface.writeByte('\n');
+        try stdout_writer.interface.flush();
+        return;
+    }
+
+    try app.open_project_in_tmux(cli_result.root_path);
+}
+
+test {
+    _ = vaxis;
+    _ = App;
+    _ = cli;
+}
