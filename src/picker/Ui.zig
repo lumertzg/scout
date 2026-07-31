@@ -11,12 +11,29 @@ const Entries = @import("Entries.zig");
 const Matcher = @import("Matcher.zig");
 const Projects = @import("../Projects.zig");
 const Theme = @import("Theme.zig");
+const Tmux = @import("../Tmux.zig");
 
 const ACTIVE_MARKER = "• ";
+
+pub const Loaded = struct {
+    projects: Projects,
+    sessions: ?Tmux.SessionSet = null,
+};
+
+pub const Loader = struct {
+    context: *anyopaque,
+    load: *const fn (context: *anyopaque) anyerror!Loaded,
+};
+
+pub const Selection = struct {
+    projects: Projects,
+    project_index: usize,
+};
 
 const Event = union(enum) {
     key_press: vaxis.Key,
     winsize: vaxis.Winsize,
+    loaded: anyerror!Loaded,
 };
 
 // Bound event draining so pasted input amortizes rendering without allowing a
@@ -37,23 +54,18 @@ comptime {
 allocator: Allocator,
 io: std.Io,
 environ_map: *std.process.Environ.Map,
-entries: Entries.List,
+loader: Loader,
 
-pub fn init(allocator: Allocator, io: std.Io, environ_map: *std.process.Environ.Map, entries: Entries.List) Self {
+pub fn init(allocator: Allocator, io: std.Io, environ_map: *std.process.Environ.Map, loader: Loader) Self {
     return .{
         .allocator = allocator,
         .io = io,
         .environ_map = environ_map,
-        .entries = entries,
+        .loader = loader,
     };
 }
 
-pub fn pick(self: Self) !?usize {
-    if (self.entries.len() == 0) return null;
-
-    var state = try State.init(self.allocator, self.entries);
-    defer state.deinit(self.allocator);
-
+pub fn pick(self: Self) !?Selection {
     var tty_buffer: [TTY_BUFFER_BYTES]u8 = undefined;
     var tty = try vaxis.Tty.init(self.io, &tty_buffer);
     defer tty.deinit();
@@ -65,6 +77,12 @@ pub fn pick(self: Self) !?usize {
     var loop: vaxis.Loop(Event) = .init(self.io, &tty, &vx);
     try loop.start();
     defer loop.stop();
+
+    var load_future = try self.io.concurrent(load_and_notify, .{ self.loader, &loop });
+    defer load_future.cancel(self.io);
+
+    var view_state = try ViewState.init(self.allocator);
+    defer view_state.deinit(self.allocator);
 
     var screen_ready = false;
     // The user bounds the loop lifetime; each turn drains at most one batch.
@@ -82,18 +100,36 @@ pub fn pick(self: Self) !?usize {
                     screen_ready = true;
                     redraw = true;
                 },
-                .key_press => |key| switch (try state.handle_key(self.allocator, key)) {
-                    .ignore => {},
-                    .redraw => redraw = true,
-                    .accept => return state.selected_project_index(),
-                    .cancel => return null,
+                .key_press => |key| {
+                    switch (try view_state.handle_key(self.allocator, key)) {
+                        .ignore => {},
+                        .redraw => redraw = true,
+                        .accept => return view_state.selection(),
+                        .cancel => return null,
+                    }
+                },
+                .loaded => |loaded_result| {
+                    load_future.await(self.io);
+                    if (!try view_state.finish_loading(self.allocator, try loaded_result)) return null;
+                    redraw = true;
                 },
             }
         }
 
-        state.apply_pending_filter();
-        if (screen_ready and redraw) try draw(&state, &vx, tty.writer());
+        view_state.apply_pending_filter();
+        if (screen_ready and redraw) {
+            if (view_state.ready) |*ready| {
+                try draw(ready, &vx, tty.writer());
+            } else {
+                try draw_loading(view_state.loading_query.items, &vx, tty.writer());
+            }
+        }
     }
+}
+
+fn load_and_notify(loader: Loader, loop: *vaxis.Loop(Event)) void {
+    const result = loader.load(loader.context);
+    loop.postEvent(.{ .loaded = result }) catch {};
 }
 
 const Action = enum {
@@ -102,6 +138,26 @@ const Action = enum {
     accept,
     cancel,
 };
+
+fn handle_loading_key(query: *std.ArrayList(u8), allocator: Allocator, key: vaxis.Key) !Action {
+    if (key.matches(vaxis.Key.escape, .{}) or key.matches('c', .{ .ctrl = true })) {
+        return .cancel;
+    }
+
+    if (key.matches(vaxis.Key.backspace, .{})) {
+        if (query.items.len == 0) return .ignore;
+        remove_last_codepoint(query);
+        return .redraw;
+    }
+
+    const text = key.text orelse return .ignore;
+    if (!accepts_text(key.mods, text)) return .ignore;
+    assert(query.items.len <= PROJECT_NAME_BYTES_MAX);
+    if (text.len > PROJECT_NAME_BYTES_MAX - query.items.len) return .ignore;
+
+    try query.appendSlice(allocator, text);
+    return .redraw;
+}
 
 const PendingFilter = enum {
     none,
@@ -377,6 +433,58 @@ const State = struct {
     }
 };
 
+const ViewState = struct {
+    loading_query: std.ArrayList(u8),
+    ready: ?State = null,
+
+    fn init(allocator: Allocator) !ViewState {
+        return .{
+            .loading_query = try std.ArrayList(u8).initCapacity(allocator, QUERY_BYTES_EXPECTED),
+        };
+    }
+
+    fn deinit(self: *ViewState, allocator: Allocator) void {
+        self.loading_query.deinit(allocator);
+        if (self.ready) |*ready| ready.deinit(allocator);
+    }
+
+    fn handle_key(self: *ViewState, allocator: Allocator, key: vaxis.Key) !Action {
+        if (self.ready) |*ready| return ready.handle_key(allocator, key);
+        return handle_loading_key(&self.loading_query, allocator, key);
+    }
+
+    fn finish_loading(self: *ViewState, allocator: Allocator, loaded: Loaded) !bool {
+        assert(self.ready == null);
+        var entries = Entries.from_projects(loaded.projects);
+        if (loaded.sessions) |sessions| {
+            entries = try Entries.with_active_sessions(allocator, loaded.projects, sessions);
+        }
+        if (entries.len() == 0) return false;
+
+        self.ready = try State.init(allocator, entries);
+        const ready = &self.ready.?;
+        const query_len = valid_prefix_len(self.loading_query.items, ready.positions_per_project);
+        if (query_len > 0) {
+            try ready.append_query(allocator, self.loading_query.items[0..query_len]);
+            ready.refresh_matches();
+        }
+        return true;
+    }
+
+    fn selection(self: ViewState) ?Selection {
+        const ready = self.ready orelse return null;
+        const project_index = ready.selected_project_index() orelse return null;
+        return .{
+            .projects = ready.entries.projects,
+            .project_index = project_index,
+        };
+    }
+
+    fn apply_pending_filter(self: *ViewState) void {
+        if (self.ready) |*ready| ready.apply_pending_filter();
+    }
+};
+
 fn draw(state: *State, vx: *vaxis.Vaxis, tty: *std.Io.Writer) !void {
     const window = vx.window();
     if (window.width == 0 or window.height == 0) return;
@@ -385,14 +493,15 @@ fn draw(state: *State, vx: *vaxis.Vaxis, tty: *std.Io.Writer) !void {
 
     state.sync_scroll(layout.visible_rows());
     const visible_count = @min(layout.visible_rows(), state.match_count - state.first_visible_index);
-    const list_rows: usize = if (state.match_count == 0 and layout.visible_rows() > 0)
-        1
-    else
-        visible_count;
-    const list_first = if (list_rows > 0)
-        layout.list_row_end - @as(u16, @intCast(list_rows))
-    else
-        layout.status_row;
+    var list_rows = visible_count;
+    if (state.match_count == 0 and layout.visible_rows() > 0) {
+        list_rows = 1;
+    }
+
+    var list_first = layout.status_row;
+    if (list_rows > 0) {
+        list_first = layout.list_row_end - @as(u16, @intCast(list_rows));
+    }
     const first_drawn_row = @min(list_first, layout.status_row);
     const clear_row = @min(state.first_drawn_row orelse first_drawn_row, first_drawn_row);
 
@@ -412,15 +521,38 @@ fn draw(state: *State, vx: *vaxis.Vaxis, tty: *std.Io.Writer) !void {
 
     var status_buffer: [STATUS_BUFFER_BYTES]u8 = undefined;
     draw_status(state, window, layout.status_row, &status_buffer);
-    draw_input(state, window, layout.input_row);
+    draw_input(state.query.items, window, layout.input_row);
 
     try vx.render(tty);
 }
 
-fn draw_input(state: *const State, window: vaxis.Window, row: u16) void {
+fn draw_loading(query: []const u8, vx: *vaxis.Vaxis, tty: *std.Io.Writer) !void {
+    const window = vx.window();
+    if (window.width == 0 or window.height == 0) return;
+
+    const layout: Layout = .init(window.height);
+    window.child(.{
+        .y_off = layout.status_row,
+        .height = window.height - layout.status_row,
+    }).fill(.{});
+
+    _ = window.print(&.{.{
+        .text = "Loading projects…",
+        .style = Theme.muted,
+    }}, .{
+        .row_offset = layout.status_row,
+        .col_offset = 1,
+        .wrap = .none,
+    });
+    draw_input(query, window, layout.input_row);
+
+    try vx.render(tty);
+}
+
+fn draw_input(query: []const u8, window: vaxis.Window, row: u16) void {
     const input = [_]vaxis.Segment{
         .{ .text = "> ", .style = Theme.accent },
-        .{ .text = state.query.items },
+        .{ .text = query },
     };
     const result = window.print(&input, .{
         .row_offset = row,
@@ -428,7 +560,7 @@ fn draw_input(state: *const State, window: vaxis.Window, row: u16) void {
         .wrap = .none,
     });
 
-    if (state.query.items.len == 0) {
+    if (query.len == 0) {
         _ = window.print(&.{
             .{ .text = "Filter projects", .style = Theme.muted },
         }, .{
@@ -489,10 +621,7 @@ fn draw_item(state: *State, window: vaxis.Window, row: u16, match: State.RankedM
     }).col;
 
     const active = state.entries.is_active(match.entry_index);
-    const marker_style = if (active)
-        if (is_selected) Theme.active_selected else Theme.active
-    else
-        base_style;
+    const marker_style = if (!active) base_style else if (is_selected) Theme.active_selected else Theme.active;
     column = print_text(window, row, column, if (active) ACTIVE_MARKER else "  ", marker_style);
 
     if (state.query.items.len == 0 or !is_ascii(state.query.items)) {
@@ -576,6 +705,60 @@ fn remove_last_codepoint(query: *std.ArrayList(u8)) void {
     }
 
     query.items.len = new_len;
+}
+
+fn valid_prefix_len(text: []const u8, byte_limit: usize) usize {
+    var prefix_len = @min(text.len, byte_limit);
+    if (prefix_len == text.len) return prefix_len;
+
+    while (prefix_len > 0 and text[prefix_len] & 0xc0 == 0x80) {
+        prefix_len -= 1;
+    }
+    return prefix_len;
+}
+
+test "loading input preserves typed text and backspace" {
+    var query: std.ArrayList(u8) = .empty;
+    defer query.deinit(std.testing.allocator);
+
+    const typed = try handle_loading_key(&query, std.testing.allocator, .{
+        .codepoint = 'é',
+        .text = "café",
+    });
+    try std.testing.expectEqual(Action.redraw, typed);
+    try std.testing.expectEqualStrings("café", query.items);
+
+    const erased = try handle_loading_key(&query, std.testing.allocator, .{
+        .codepoint = vaxis.Key.backspace,
+    });
+    try std.testing.expectEqual(Action.redraw, erased);
+    try std.testing.expectEqualStrings("caf", query.items);
+}
+
+test "loading query truncates only at a UTF-8 boundary" {
+    try std.testing.expectEqual(@as(usize, 2), valid_prefix_len("abécd", 3));
+    try std.testing.expectEqual(@as(usize, 4), valid_prefix_len("abécd", 4));
+    try std.testing.expectEqual(@as(usize, 6), valid_prefix_len("abécd", 10));
+}
+
+test "loading query is applied when projects arrive" {
+    const project_names = [_][]const u8{ "scout", "other", "source" };
+    const entries = try test_entries(std.testing.allocator, &project_names, 0);
+    defer deinit_test_entries(entries);
+
+    var view_state = try ViewState.init(std.testing.allocator);
+    defer view_state.deinit(std.testing.allocator);
+
+    _ = try view_state.handle_key(std.testing.allocator, .{ .codepoint = 's', .text = "s" });
+    _ = try view_state.handle_key(std.testing.allocator, .{ .codepoint = 'o', .text = "o" });
+    try std.testing.expect(try view_state.finish_loading(std.testing.allocator, .{
+        .projects = entries.projects,
+    }));
+
+    const ready = &view_state.ready.?;
+    try std.testing.expectEqualStrings("so", ready.query.items);
+    try std.testing.expectEqual(@as(usize, 2), ready.match_count);
+    try std.testing.expectEqualStrings("source", ready.selected_item().?);
 }
 
 test "state filters and selects matches" {

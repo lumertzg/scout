@@ -28,12 +28,11 @@ pub fn close(self: *Self) void {
 fn format_path(arena: Allocator, io: std.Io, home: ?[]const u8, source_path: []const u8) ![]const u8 {
     const expanded_path = try expand_home(arena, home, source_path);
 
-    const absolute_path = if (std.Io.Dir.path.isAbsolute(expanded_path))
-        expanded_path
-    else blk: {
+    var absolute_path = expanded_path;
+    if (!std.Io.Dir.path.isAbsolute(expanded_path)) {
         const cwd = try std.process.currentPathAlloc(io, arena);
-        break :blk try std.Io.Dir.path.resolve(arena, &.{ cwd, expanded_path });
-    };
+        absolute_path = try std.Io.Dir.path.resolve(arena, &.{ cwd, expanded_path });
+    }
 
     if (absolute_path.len > 0 and std.Io.Dir.path.isSep(absolute_path[absolute_path.len - 1])) {
         return absolute_path;
