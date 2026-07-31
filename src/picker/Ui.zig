@@ -77,6 +77,8 @@ pub fn pick(self: Self) !?Selection {
     var loop: vaxis.Loop(Event) = .init(self.io, &tty, &vx);
     try loop.start();
     defer loop.stop();
+    try loop.installResizeHandler();
+    defer loop.uninstallResizeHandler();
 
     var load_future = try self.io.concurrent(load_and_notify, .{ self.loader, &loop });
     defer load_future.cancel(self.io);
