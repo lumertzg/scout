@@ -543,7 +543,7 @@ fn draw_loading(query: []const u8, vx: *vaxis.Vaxis, tty: *std.Io.Writer) !void 
         .style = Theme.muted,
     }}, .{
         .row_offset = layout.status_row,
-        .col_offset = 1,
+        .col_offset = 0,
         .wrap = .none,
     });
     draw_input(query, window, layout.input_row);
@@ -558,7 +558,7 @@ fn draw_input(query: []const u8, window: vaxis.Window, row: u16) void {
     };
     const result = window.print(&input, .{
         .row_offset = row,
-        .col_offset = 1,
+        .col_offset = 0,
         .wrap = .none,
     });
 
@@ -577,13 +577,13 @@ fn draw_input(query: []const u8, window: vaxis.Window, row: u16) void {
 
 fn draw_status(state: *const State, window: vaxis.Window, row: u16, status_buffer: []u8) void {
     const status = std.fmt.bufPrint(status_buffer, "{d}/{d}", .{ state.match_count, state.entries.len() }) catch unreachable;
-    if (status.len + 1 <= window.width) {
+    if (status.len <= window.width) {
         _ = window.print(&.{.{
             .text = status,
             .style = Theme.muted,
         }}, .{
             .row_offset = row,
-            .col_offset = 1,
+            .col_offset = 0,
             .wrap = .none,
         });
     }
@@ -592,7 +592,7 @@ fn draw_status(state: *const State, window: vaxis.Window, row: u16, status_buffe
 fn draw_empty(window: vaxis.Window, row: u16) void {
     _ = window.print(&.{
         .{ .text = "  No matches", .style = Theme.muted },
-    }, .{ .row_offset = row, .col_offset = 1, .wrap = .none });
+    }, .{ .row_offset = row, .col_offset = 0, .wrap = .none });
 }
 
 fn draw_matches(state: *State, window: vaxis.Window, layout: Layout) void {
@@ -618,7 +618,7 @@ fn draw_item(state: *State, window: vaxis.Window, row: u16, match: State.RankedM
 
     var column = window.print(&gutter, .{
         .row_offset = row,
-        .col_offset = 1,
+        .col_offset = 0,
         .wrap = .none,
     }).col;
 
