@@ -7,6 +7,7 @@ const Allocator = std.mem.Allocator;
 
 io: std.Io,
 handle: std.Io.Dir,
+/// Arena-owned absolute path, always ending in a path separator.
 path: []const u8,
 
 /// Resolves `source_path` absolutely and opens it for iteration.

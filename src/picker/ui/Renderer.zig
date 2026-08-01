@@ -245,6 +245,7 @@ fn draw_git(
     _ = print_text(window, row, column, "]", status_style);
 }
 
+/// Returns whether an entry has room reserved for Git metadata.
 pub fn should_draw_git_metadata(is_selected: bool) bool {
     return is_selected;
 }
@@ -267,11 +268,13 @@ fn is_ascii(text: []const u8) bool {
     return true;
 }
 
+/// Terminal rows reserved for the prompt, status, and project list.
 pub const Layout = struct {
     input_row: u16,
     status_row: u16,
     list_row_end: u16,
 
+    /// Computes a saturating layout for `height` terminal rows.
     pub fn init(height: u16) Layout {
         return .{
             .input_row = height -| 1,
@@ -286,6 +289,8 @@ pub const Layout = struct {
 
     pub fn item_row(self: Layout, visible_index: usize) u16 {
         assert(visible_index < self.visible_rows());
+        // The list grows upward from the prompt so the selection stays near the
+        // user's input on tall terminals.
         return self.list_row_end - 1 - @as(u16, @intCast(visible_index));
     }
 };

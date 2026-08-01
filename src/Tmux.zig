@@ -6,6 +6,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 
+/// Arena-backed set of tmux session names.
 pub const SessionSet = std.StringHashMapUnmanaged(void);
 
 const RESPONSE_BYTES_MAX = 1024 * 1024;
@@ -24,6 +25,7 @@ stdout_buffer: [CONTROL_STDOUT_BYTES]u8,
 stdin_writer: std.Io.File.Writer,
 stdout_reader: std.Io.File.Reader,
 
+/// Prevents duplicate cleanup after the child has been reaped or killed.
 closed: bool,
 
 /// Starts a control mode client attached to Scout's current session.
@@ -130,8 +132,7 @@ pub fn list_sessions_direct(arena: Allocator, io: std.Io) !SessionSet {
 /// Creates the session for `project_path` when missing, then attaches to it.
 ///
 /// Replaces Scout's process image, so this does not return on success. Every
-/// caller-owned resource must already be released; see
-/// `replace_with_project_session`.
+/// caller-owned resource must already be released.
 pub fn switch_to_project(self: *Self, project_path: []const u8) !void {
     const name = try session_name(self.arena, project_path);
     var command: std.Io.Writer.Allocating = .init(self.arena);

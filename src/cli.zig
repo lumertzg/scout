@@ -12,23 +12,28 @@ pub const usage =
     \\
 ;
 
+/// Top-level command selected by parsing.
 pub const Command = enum {
     run,
     help,
 };
 
+/// Parsed command-line options.
 pub const Result = struct {
+    /// Root whose direct children are offered as projects.
     root_path: []const u8 = "~/Projects",
     command: Command = .run,
     no_tmux: bool = false,
 };
 
+/// Errors caused by invalid command-line arguments.
 pub const ParseError = error{
     MissingPathValue,
     UnexpectedArgument,
     UnknownOption,
 };
 
+/// Returns a short user-facing explanation for `err`.
 pub fn error_message(err: ParseError) []const u8 {
     return switch (err) {
         error.MissingPathValue => "expected a directory after --path",
@@ -37,6 +42,7 @@ pub fn error_message(err: ParseError) []const u8 {
     };
 }
 
+/// Prints a parse error followed by command usage.
 pub fn print_error(writer: *std.Io.Writer, err: ParseError) std.Io.Writer.Error!void {
     try writer.print("scout: {s}\n\n{s}", .{
         error_message(err),

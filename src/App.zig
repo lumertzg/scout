@@ -15,7 +15,9 @@ const PickerLoop = vaxis.Loop(Picker.Event);
 
 arena: Allocator,
 io: std.Io,
+/// Home directory used to expand a leading tilde in project roots.
 home: ?[]const u8,
+/// Whether Scout started inside a tmux client.
 inside_tmux: bool,
 picker: Picker,
 
@@ -42,6 +44,7 @@ const EmitContext = struct {
     event_loop: *vaxis.Loop(Picker.Event),
     batches: *std.ArrayList(*Projects.Batch),
 
+    /// Retains a discovered batch and posts it to the picker.
     pub fn emit_batch(self: *EmitContext, batch: *Projects.Batch) !void {
         try self.batches.append(self.app.arena, batch);
         try self.event_loop.postEvent(.{ .batch = batch });
@@ -58,6 +61,9 @@ pub fn init(arena: Allocator, io: std.Io, environ_map: *std.process.Environ.Map)
     };
 }
 
+/// Lets the user choose a direct child of `root_path`.
+///
+/// The returned path belongs to `arena`. A null result means the user canceled.
 pub fn pick_path(self: Self, root_path: []const u8) !?[]const u8 {
     var context: LoadContext = .{
         .app = self,
@@ -76,6 +82,9 @@ pub fn pick_path(self: Self, root_path: []const u8) !?[]const u8 {
     });
 }
 
+/// Lets the user choose a project and opens its tmux session.
+///
+/// On success this may replace the Scout process and therefore not return.
 pub fn open_project_in_tmux(self: Self, root_path: []const u8) !void {
     var context: LoadContext = .{
         .app = self,

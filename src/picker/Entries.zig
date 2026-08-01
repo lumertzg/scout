@@ -6,13 +6,16 @@ const assert = std.debug.assert;
 const Git = @import("../git.zig");
 const Projects = @import("../Projects.zig");
 
+/// Stable address of one project within the streamed batches.
 pub const EntryLocation = struct {
     batch: *Projects.Batch,
     name_index: usize,
 };
 
+/// Flat picker view over project records stored in batches.
 pub const List = struct {
     batches: []const *Projects.Batch,
+    /// Flat-index lookup table into `batches`.
     locations: []const EntryLocation,
 
     pub fn len(self: List) usize {
@@ -25,6 +28,7 @@ pub const List = struct {
         return location.batch.projects.slice().items(.name)[location.name_index];
     }
 
+    /// Returns whether the entry has a published active tmux session.
     pub fn entry_is_tmux_session_active(self: List, entry_index: usize) bool {
         assert(entry_index < self.locations.len);
         const location = self.locate_entry(entry_index) orelse unreachable;
@@ -33,6 +37,7 @@ pub const List = struct {
         return location.batch.projects.slice().items(.tmux_session_active)[location.name_index];
     }
 
+    /// Returns the published branch name, if known.
     pub fn entry_git_branch(self: List, entry_index: usize) ?[]const u8 {
         assert(entry_index < self.locations.len);
         const location = self.locate_entry(entry_index) orelse unreachable;
@@ -41,6 +46,7 @@ pub const List = struct {
         return location.batch.projects.slice().items(.git_branch)[location.name_index];
     }
 
+    /// Returns the published Git state, or an empty state while it loads.
     pub fn entry_git_state(self: List, entry_index: usize) Git.State {
         assert(entry_index < self.locations.len);
         const location = self.locate_entry(entry_index) orelse unreachable;

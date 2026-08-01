@@ -7,9 +7,11 @@ const assert = std.debug.assert;
 const Dir = @import("dir.zig");
 const Git = @import("git.zig");
 
+/// Maximum number of filesystem entries read and emitted at once.
 pub const BATCH_SIZE = 64;
 const DIRECTORY_READER_BYTES = 4096;
 
+/// Display and enrichment data for one direct child directory.
 pub const Project = struct {
     name: []const u8,
     tmux_session_active: bool = false,
@@ -17,15 +19,24 @@ pub const Project = struct {
     git_state: Git.State = .{},
 };
 
+/// One ordered group of projects emitted during streaming discovery.
 pub const Batch = struct {
+    /// Zero-based emission order; consumers use it to append batches safely.
     batch_index: usize,
+    /// Absolute root path shared by every project in this batch.
     root_path: []const u8,
+    /// Structure-of-arrays project storage used by enrichment and rendering.
     projects: std.MultiArrayList(Project),
+    /// Set with release ordering after all tmux fields in this batch are ready.
     tmux_enrichment_complete: std.atomic.Value(bool) = .init(false),
+    /// Set with release ordering after all Git fields in this batch are ready.
     git_enrichment_complete: std.atomic.Value(bool) = .init(false),
 };
 
 /// Emits arena-owned batches of immediate child directory names.
+///
+/// Calls `emit_context.emit_batch` once per non-empty batch and waits for each
+/// call to finish before it reuses the directory reader's entry buffer.
 pub fn discover_batches(arena: Allocator, directory: Dir, emit_context: anytype) !void {
     var reader_buffer: [DIRECTORY_READER_BYTES]u8 align(@alignOf(usize)) = undefined;
     var reader = std.Io.Dir.Reader.init(directory.handle, &reader_buffer);

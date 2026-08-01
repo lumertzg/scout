@@ -15,11 +15,15 @@ const TTY_BUFFER_BYTES = 1024;
 
 allocator: Allocator,
 io: std.Io,
+/// Environment used by Vaxis to detect terminal capabilities.
 environ_map: *std.process.Environ.Map,
 loader: Loader,
 
+/// Type-erased owner of the background loading tasks.
 pub const LoadWorkers = struct {
     opaque_context: *anyopaque,
+    /// Cancels outstanding work and waits until it can no longer post events.
+    /// The callback must tolerate more than one call.
     cancel_and_await_fn: *const fn (opaque_context: *anyopaque, io: std.Io) void,
 
     pub fn cancel_and_await(self: LoadWorkers, io: std.Io) void {
@@ -27,20 +31,33 @@ pub const LoadWorkers = struct {
     }
 };
 
-pub const Loader = struct { context: *anyopaque, start_loading: *const fn (
-    opaque_context: *anyopaque,
-    event_loop: *vaxis.Loop(Event),
-) anyerror!LoadWorkers };
+/// Type-erased callback that connects project loading to the picker loop.
+pub const Loader = struct {
+    context: *anyopaque,
+    /// Starts workers that publish progress to `event_loop`.
+    ///
+    /// The returned handle owns those workers until `cancel_and_await` returns;
+    /// neither the context nor event loop may be used after that point.
+    start_loading: *const fn (
+        opaque_context: *anyopaque,
+        event_loop: *vaxis.Loop(Event),
+    ) anyerror!LoadWorkers,
+};
 
 pub const Selection = @import("ui/Types.zig").Selection;
 
+/// Input and background-work events consumed by the picker.
 pub const Event = union(enum) {
     key_press: vaxis.Key,
     winsize: vaxis.Winsize,
     batch: *Projects.Batch,
+    /// Batch whose tmux fields are now published.
     batch_tmux_enriched: *Projects.Batch,
+    /// Batch whose Git fields are now published.
     batch_git_enriched: *Projects.Batch,
+    /// Final filesystem discovery result.
     discovery_result: anyerror!void,
+    /// Final tmux and Git enrichment result.
     enrichment_result: anyerror!void,
 };
 
@@ -53,6 +70,7 @@ pub fn init(allocator: Allocator, io: std.Io, environ_map: *std.process.Environ.
     };
 }
 
+/// Runs the terminal UI until the user selects a project or cancels.
 pub fn pick(self: Self) !?Selection {
     var tty_buffer: [TTY_BUFFER_BYTES]u8 = undefined;
     var tty = try vaxis.Tty.init(self.io, &tty_buffer);

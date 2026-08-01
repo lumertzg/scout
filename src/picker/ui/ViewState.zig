@@ -16,13 +16,17 @@ const QUERY_BYTES_EXPECTED = 64;
 const handle_loading_key = Input.handle_loading_key;
 const valid_prefix_len = Input.valid_prefix_len;
 
+/// Picker state that spans the loading and ready phases.
 pub const ViewState = struct {
+    /// Query accepted before the first batch makes ranked state available.
     loading_query: std.ArrayList(u8),
     batches: std.ArrayList(*Projects.Batch),
+    /// Flat lookup table from picker entries to batch records.
     locations: std.ArrayList(Entries.EntryLocation),
     entry_count: usize = 0,
     discovery_complete: bool = false,
     enrichment_complete: bool = false,
+    /// Whether published tmux state may have changed match order.
     ordering_pending: bool = false,
     ready: ?State = null,
 
@@ -45,12 +49,14 @@ pub const ViewState = struct {
         if (self.ready) |*ready| ready.deinit(allocator);
     }
 
+    /// Applies pending background updates, then handles one key.
     pub fn handle_key(self: *ViewState, allocator: Allocator, key: vaxis.Key) !Action {
         self.apply_pending_updates();
         if (self.ready) |*ready| return ready.handle_key(allocator, key);
         return handle_loading_key(&self.loading_query, allocator, key);
     }
 
+    /// Adds the next discovery batch and makes its projects searchable.
     pub fn append_batch(self: *ViewState, allocator: Allocator, batch: *Projects.Batch) !void {
         assert(batch.batch_index == self.batches.items.len);
 
@@ -86,6 +92,7 @@ pub const ViewState = struct {
         }
     }
 
+    /// Observes published tmux metadata and schedules a stable reorder.
     pub fn finish_batch_tmux_enrichment(self: *ViewState, batch: *Projects.Batch) void {
         assert(batch.batch_index < self.batches.items.len);
         assert(self.batches.items[batch.batch_index] == batch);
@@ -93,6 +100,7 @@ pub const ViewState = struct {
         self.ordering_pending = true;
     }
 
+    /// Verifies that a received batch has published its Git metadata.
     pub fn finish_batch_git_enrichment(self: *ViewState, batch: *Projects.Batch) void {
         assert(batch.batch_index < self.batches.items.len);
         assert(self.batches.items[batch.batch_index] == batch);
@@ -108,6 +116,7 @@ pub const ViewState = struct {
         };
     }
 
+    /// Applies one deferred query filter or enrichment-driven reorder.
     pub fn apply_pending_updates(self: *ViewState) void {
         const ready = if (self.ready) |*ready| ready else return;
         if (ready.pending_filter != .none) {

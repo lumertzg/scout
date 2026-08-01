@@ -24,8 +24,10 @@ const BOUNDARY_BONUSES: [256]u8 = blk: {
     break :blk bonuses;
 };
 
+/// Score and byte range for the chosen fuzzy-match alignment.
 pub const Result = struct {
     score: i32,
+    /// Inclusive start and exclusive end byte offsets.
     start: usize,
     end: usize,
 };

@@ -21,17 +21,24 @@ comptime {
 const accepts_text = Input.accepts_text;
 const remove_last_codepoint = Input.remove_last_codepoint;
 
+/// Deferred update required after editing the query.
 pub const PendingFilter = enum {
     none,
+    /// Search only the current matches after appending text.
     narrow,
+    /// Search every entry after deleting text.
     refresh,
 };
 
+/// Search, ordering, selection, and scrolling state for loaded entries.
 pub const State = struct {
+    /// Cached rank data for one matching entry.
     pub const RankedMatch = struct {
         score: i32,
         entry_index: usize,
+        /// Byte width from the first through last matched byte.
         match_span_size_bytes: u16,
+        /// Full project-name byte length used as a ranking tie-breaker.
         project_name_size_bytes: u16,
     };
 
@@ -43,16 +50,21 @@ pub const State = struct {
     entries: Entries.List,
 
     query: std.ArrayList(u8) = .empty,
+    /// ASCII-lowercase query bytes used by the matcher.
     folded_query: std.ArrayList(u8) = .empty,
 
+    /// Scratch storage sized for every entry; only `match_count` items are live.
     matches: std.ArrayList(RankedMatch),
+    /// Largest project name, used to bound query and position buffers.
     project_name_size_bytes_max: usize,
 
     match_count: usize = 0,
     selected_index: usize = 0,
     first_visible_index: usize = 0,
 
+    /// Screen row of the first drawn entry, used to clear stale rows.
     first_drawn_row: ?u16 = null,
+    /// Query update delayed until input handling or drawing needs fresh results.
     pending_filter: PendingFilter = .none,
 
     pub fn init(allocator: Allocator, entries: Entries.List) !State {
@@ -96,6 +108,7 @@ pub const State = struct {
         self.matches.deinit(allocator);
     }
 
+    /// Adds entries appended to the backing list without rescanning old misses.
     pub fn append_entries(
         self: *State,
         allocator: Allocator,
@@ -174,6 +187,7 @@ pub const State = struct {
         return .redraw;
     }
 
+    /// Appends query bytes and their ASCII-folded form atomically on error.
     pub fn append_query(self: *State, allocator: Allocator, text: []const u8) !void {
         assert(self.query.items.len == self.folded_query.items.len);
         assert(text.len <= self.project_name_size_bytes_max - self.query.items.len);
@@ -189,6 +203,7 @@ pub const State = struct {
         assert(self.query.items.len == self.folded_query.items.len);
     }
 
+    /// Rebuilds and sorts matches from every entry.
     pub fn refresh_matches(self: *State) void {
         assert(self.query.items.len == self.folded_query.items.len);
         assert(self.matches.items.len == self.entries.len());
@@ -233,6 +248,7 @@ pub const State = struct {
         self.reset_selection();
     }
 
+    /// Refilters current matches after the query only grew.
     pub fn narrow_matches(self: *State) void {
         assert(self.query.items.len == self.folded_query.items.len);
         assert(self.match_count <= self.matches.items.len);
@@ -275,6 +291,7 @@ pub const State = struct {
         assert(self.query.items.len == self.folded_query.items.len);
     }
 
+    /// Sorts live matches by session state, score, compactness, then discovery order.
     pub fn sort_matches(self: *State) void {
         assert(self.match_count <= self.matches.items.len);
         const context: SortContext = .{
@@ -303,6 +320,7 @@ pub const State = struct {
         return left.entry_index < right.entry_index;
     }
 
+    /// Reorders matches while retaining the selected project when possible.
     pub fn sort_matches_preserving_selection(self: *State) void {
         const selection_is_initial = self.selected_index == 0;
         const selected_entry_location = self.selected_location();
@@ -324,6 +342,7 @@ pub const State = struct {
         return self.entries.locate_entry(self.matches.items[self.selected_index].entry_index);
     }
 
+    /// Restores a project after sorting, falling back to its prior list index.
     pub fn restore_selection(self: *State, entry_location: ?Entries.EntryLocation, previous_selected_index: usize) void {
         if (self.match_count == 0) {
             self.reset_selection();
@@ -350,13 +369,17 @@ pub const State = struct {
         self.first_visible_index = 0;
     }
 
+    /// Moves one screen row up in the bottom-up project list.
     pub fn move_up(self: *State) bool {
         if (self.match_count > 0) assert(self.selected_index < self.match_count);
+        // Larger match indexes render on higher rows because the list grows up
+        // from the prompt.
         if (self.selected_index + 1 >= self.match_count) return false;
         self.selected_index += 1;
         return true;
     }
 
+    /// Moves one screen row down in the bottom-up project list.
     pub fn move_down(self: *State) bool {
         if (self.match_count > 0) assert(self.selected_index < self.match_count);
         if (self.selected_index == 0) return false;
@@ -370,6 +393,7 @@ pub const State = struct {
         return self.entries.entry_name(self.matches.items[self.selected_index].entry_index);
     }
 
+    /// Adjusts the scroll window until it contains the selection.
     pub fn sync_scroll(self: *State, visible_rows: usize) void {
         if (visible_rows == 0 or self.match_count == 0) return;
         assert(self.selected_index < self.match_count);

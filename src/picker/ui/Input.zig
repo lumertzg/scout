@@ -9,6 +9,7 @@ const Action = @import("Types.zig").Action;
 
 const PROJECT_NAME_BYTES_MAX = std.Io.Dir.max_name_bytes;
 
+/// Applies a key while entries are still loading.
 pub fn handle_loading_key(query: *std.ArrayList(u8), allocator: Allocator, key: vaxis.Key) !Action {
     if (key.matches(vaxis.Key.escape, .{}) or key.matches('c', .{ .ctrl = true })) {
         return .cancel;
@@ -29,11 +30,13 @@ pub fn handle_loading_key(query: *std.ArrayList(u8), allocator: Allocator, key: 
     return .redraw;
 }
 
+/// Returns whether a key's text may be appended to the search query.
 pub fn accepts_text(mods: vaxis.Key.Modifiers, text: []const u8) bool {
     if (mods.ctrl or mods.alt or mods.super or mods.hyper or mods.meta) return false;
     return text.len > 0 and text[0] >= ' ' and text[0] != 0x7f;
 }
 
+/// Removes the last complete UTF-8 codepoint, tolerating invalid trailing data.
 pub fn remove_last_codepoint(query: *std.ArrayList(u8)) void {
     if (query.items.len == 0) return;
 
@@ -46,6 +49,7 @@ pub fn remove_last_codepoint(query: *std.ArrayList(u8)) void {
     query.items.len = new_len;
 }
 
+/// Finds the longest UTF-8 prefix no longer than `byte_limit` bytes.
 pub fn valid_prefix_len(text: []const u8, byte_limit: usize) usize {
     var prefix_len = @min(text.len, byte_limit);
     if (prefix_len == text.len) return prefix_len;

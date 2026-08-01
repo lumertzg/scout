@@ -10,6 +10,10 @@ const c = @cImport({
     @cInclude("git2.h");
 });
 
+/// Repository status flags used by the picker.
+///
+/// The packed layout keeps each project record small. Padding reserves bits
+/// without exposing them as status.
 pub const State = packed struct(u16) {
     conflicted: bool = false,
     stashed: bool = false,
@@ -27,11 +31,14 @@ pub const State = packed struct(u16) {
     }
 };
 
+/// Git metadata shown for a discovered project.
 pub const Info = struct {
+    /// Arena-owned branch name, or null when HEAD cannot name one.
     branch: ?[]const u8 = null,
     state: State = .{},
 };
 
+/// Initializes libgit2 for repository inspection.
 pub fn init() !Self {
     if (c.git_libgit2_init() < 0) return error.GitInitializationFailed;
     return .{};

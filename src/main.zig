@@ -8,6 +8,7 @@ const cli = @import("cli.zig");
 
 const STDIO_BUFFER_BYTES = 1024;
 
+/// Restores the terminal before reporting a panic.
 pub const panic = vaxis.Panic.call;
 pub const std_options: std.Options = .{
     .log_scope_levels = &.{
