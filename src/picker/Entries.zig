@@ -1,173 +1,150 @@
 //! Builds display entries for the picker.
 
 const std = @import("std");
-const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 
+const Git = @import("../git.zig");
 const Projects = @import("../Projects.zig");
-const Tmux = @import("../Tmux.zig");
+
+pub const EntryLocation = struct {
+    batch: *Projects.Batch,
+    name_index: usize,
+};
 
 pub const List = struct {
-    projects: Projects,
-    entry_count: usize,
-    project_indices: ?[]const u32 = null,
-    active_count: usize = 0,
+    batches: []const *Projects.Batch,
+    locations: []const EntryLocation,
 
-    pub inline fn len(self: List) usize {
-        assert(self.entry_count <= self.projects.len());
-        return self.entry_count;
+    pub fn len(self: List) usize {
+        return self.locations.len;
     }
 
-    pub inline fn name(self: List, entry_index: usize) []const u8 {
-        return self.projects.name(self.project_index(entry_index));
+    pub fn entry_name(self: List, entry_index: usize) []const u8 {
+        assert(entry_index < self.locations.len);
+        const location = self.locate_entry(entry_index) orelse unreachable;
+        return location.batch.projects.slice().items(.name)[location.name_index];
     }
 
-    pub inline fn is_active(self: List, entry_index: usize) bool {
-        assert(entry_index < self.len());
-        return entry_index < self.active_count;
+    pub fn entry_is_tmux_session_active(self: List, entry_index: usize) bool {
+        assert(entry_index < self.locations.len);
+        const location = self.locate_entry(entry_index) orelse unreachable;
+        if (!location.batch.tmux_enrichment_complete.load(.acquire)) return false;
+
+        return location.batch.projects.slice().items(.tmux_session_active)[location.name_index];
     }
 
-    pub inline fn project_index(self: List, entry_index: usize) usize {
-        assert(entry_index < self.len());
-        if (self.project_indices) |project_indices| {
-            assert(project_indices.len == self.len());
-            assert(project_indices[entry_index] < self.len());
-            return project_indices[entry_index];
+    pub fn entry_git_branch(self: List, entry_index: usize) ?[]const u8 {
+        assert(entry_index < self.locations.len);
+        const location = self.locate_entry(entry_index) orelse unreachable;
+        if (!location.batch.git_enrichment_complete.load(.acquire)) return null;
+
+        return location.batch.projects.slice().items(.git_branch)[location.name_index];
+    }
+
+    pub fn entry_git_state(self: List, entry_index: usize) Git.State {
+        assert(entry_index < self.locations.len);
+        const location = self.locate_entry(entry_index) orelse unreachable;
+        if (!location.batch.git_enrichment_complete.load(.acquire)) return .{};
+
+        return location.batch.projects.slice().items(.git_state)[location.name_index];
+    }
+
+    pub fn locate_entry(self: List, entry_index: usize) ?EntryLocation {
+        if (entry_index >= self.locations.len) return null;
+        return self.locations[entry_index];
+    }
+
+    /// Verifies the cached count and batch ordering at state boundaries.
+    pub fn assert_valid(self: List) void {
+        var location_index: usize = 0;
+        for (self.batches, 0..) |batch, batch_index| {
+            assert(batch.batch_index == batch_index);
+            for (0..batch.projects.len) |name_index| {
+                assert(location_index < self.locations.len);
+                const location = self.locations[location_index];
+                assert(location.batch == batch);
+                assert(location.name_index == name_index);
+                location_index += 1;
+            }
         }
-        return entry_index;
+        assert(location_index == self.locations.len);
     }
 };
 
-pub fn from_projects(projects: Projects) List {
+test "empty and multi-batch lists locate names across boundaries" {
+    const empty: List = .{ .batches = &.{}, .locations = &.{} };
+    try std.testing.expectEqual(@as(usize, 0), empty.len());
+
+    var batches = [_]Projects.Batch{
+        try test_batch(std.testing.allocator, 0, &.{ "alpha", "beta" }),
+        try test_batch(std.testing.allocator, 1, &.{"gamma"}),
+    };
+    defer deinit_test_batch(std.testing.allocator, &batches[1]);
+    defer deinit_test_batch(std.testing.allocator, &batches[0]);
+    const batch_pointers = [_]*Projects.Batch{ &batches[0], &batches[1] };
+    const locations = [_]EntryLocation{
+        .{ .batch = &batches[0], .name_index = 0 },
+        .{ .batch = &batches[0], .name_index = 1 },
+        .{ .batch = &batches[1], .name_index = 0 },
+    };
+    const list: List = .{ .batches = &batch_pointers, .locations = &locations };
+
+    try std.testing.expectEqualStrings("alpha", list.entry_name(0));
+    try std.testing.expectEqualStrings("beta", list.entry_name(1));
+    try std.testing.expectEqualStrings("gamma", list.entry_name(2));
+    try std.testing.expectEqual(&batches[0], list.locate_entry(1).?.batch);
+    try std.testing.expectEqual(@as(usize, 1), list.locate_entry(1).?.name_index);
+    try std.testing.expectEqual(&batches[1], list.locate_entry(2).?.batch);
+    try std.testing.expectEqual(@as(usize, 0), list.locate_entry(2).?.name_index);
+    try std.testing.expectEqual(@as(?EntryLocation, null), list.locate_entry(3));
+}
+
+test "active state is hidden until enrichment is published" {
+    var batch = try test_batch(std.testing.allocator, 0, &.{ "alpha", "beta" });
+    defer deinit_test_batch(std.testing.allocator, &batch);
+    const batch_pointers = [_]*Projects.Batch{&batch};
+    const locations = [_]EntryLocation{
+        .{ .batch = &batch, .name_index = 0 },
+        .{ .batch = &batch, .name_index = 1 },
+    };
+    const list: List = .{ .batches = &batch_pointers, .locations = &locations };
+
+    batch.projects.slice().items(.tmux_session_active)[1] = true;
+    try std.testing.expect(!list.entry_is_tmux_session_active(1));
+
+    batch.tmux_enrichment_complete.store(true, .release);
+    try std.testing.expect(list.entry_is_tmux_session_active(1));
+    try std.testing.expect(!list.entry_is_tmux_session_active(0));
+}
+
+test "git metadata is hidden until enrichment is published" {
+    var batch = try test_batch(std.testing.allocator, 0, &.{"alpha"});
+    defer deinit_test_batch(std.testing.allocator, &batch);
+    const batch_pointers = [_]*Projects.Batch{&batch};
+    const locations = [_]EntryLocation{.{ .batch = &batch, .name_index = 0 }};
+    const list: List = .{ .batches = &batch_pointers, .locations = &locations };
+
+    batch.projects.slice().items(.git_branch)[0] = "main";
+    batch.projects.slice().items(.git_state)[0].modified = true;
+    try std.testing.expectEqual(@as(?[]const u8, null), list.entry_git_branch(0));
+    try std.testing.expect(list.entry_git_state(0).is_empty());
+
+    batch.git_enrichment_complete.store(true, .release);
+    try std.testing.expectEqualStrings("main", list.entry_git_branch(0).?);
+    try std.testing.expect(list.entry_git_state(0).modified);
+}
+
+fn test_batch(allocator: std.mem.Allocator, batch_index: usize, names: []const []const u8) !Projects.Batch {
+    var projects = try std.MultiArrayList(Projects.Project).initCapacity(allocator, names.len);
+    errdefer projects.deinit(allocator);
+    for (names) |name| projects.appendAssumeCapacity(.{ .name = name });
     return .{
+        .batch_index = batch_index,
+        .root_path = "/dev/",
         .projects = projects,
-        .entry_count = @min(projects.len(), Projects.PROJECT_COUNT_PICKER_MAX),
     };
 }
 
-pub fn with_active_sessions(arena: Allocator, projects: Projects, sessions: Tmux.SessionSet) !List {
-    const entry_count = @min(projects.len(), Projects.PROJECT_COUNT_PICKER_MAX);
-    assert(entry_count <= std.math.maxInt(u32));
-
-    const project_indices = try arena.alloc(u32, entry_count);
-    var active_count: usize = 0;
-    var inactive_index = project_indices.len;
-    var session_buffer: [std.Io.Dir.max_name_bytes]u8 = undefined;
-
-    for (0..entry_count) |project_index| {
-        const name = projects.name(project_index);
-        const session_name = Tmux.session_name_buffered(name, &session_buffer);
-
-        if (sessions.contains(session_name)) {
-            project_indices[active_count] = @intCast(project_index);
-            active_count += 1;
-        } else {
-            inactive_index -= 1;
-            project_indices[inactive_index] = @intCast(project_index);
-        }
-    }
-
-    assert(active_count == inactive_index);
-    std.mem.reverse(u32, project_indices[active_count..]);
-
-    return .{
-        .projects = projects,
-        .entry_count = entry_count,
-        .project_indices = project_indices,
-        .active_count = active_count,
-    };
-}
-
-test "plain entries preserve project order" {
-    const projects: Projects = .{
-        .bytes = "/dev/scoutnewother",
-        .offsets = &.{ 5, 10, 13, 18 },
-        .root_len = 5,
-    };
-    const list = from_projects(projects);
-
-    try std.testing.expectEqual(@as(usize, 3), list.len());
-    try std.testing.expectEqualStrings("scout", list.name(0));
-    try std.testing.expectEqualStrings("new", list.name(1));
-    try std.testing.expectEqualStrings("other", list.name(2));
-}
-
-test "plain entries truncate projects beyond picker capacity" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    const project_names = [_][]const u8{"a"} ** (Projects.PROJECT_COUNT_PICKER_MAX + 1);
-    const projects = try test_projects(arena, "/dev/", &project_names);
-    const list = from_projects(projects);
-
-    try std.testing.expectEqual(@as(usize, Projects.PROJECT_COUNT_PICKER_MAX), list.len());
-}
-
-test "tmux entries put marked sessions first" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    var sessions: Tmux.SessionSet = .empty;
-    try sessions.put(arena, "scout", {});
-    try sessions.put(arena, "other_project", {});
-
-    const projects = try test_projects(arena, "/home/user/dev/", &.{ "scout", "new", "other.project" });
-    const list = try with_active_sessions(arena, projects, sessions);
-
-    try std.testing.expectEqual(@as(usize, 3), list.len());
-    try std.testing.expectEqual(@as(usize, 2), list.active_count);
-    try std.testing.expectEqualStrings("scout", list.name(0));
-    try std.testing.expectEqualStrings("other.project", list.name(1));
-    try std.testing.expectEqualStrings("new", list.name(2));
-    try std.testing.expectEqual(@as(usize, 2), list.project_index(1));
-}
-
-test "tmux entries do not allocate per active label" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    var sessions: Tmux.SessionSet = .empty;
-    try sessions.put(arena, "my_project", {});
-
-    const projects = try test_projects(arena, "/home/user/dev/", &.{"my.project"});
-    const list = try with_active_sessions(arena, projects, sessions);
-
-    try std.testing.expectEqual(@as(usize, 1), list.active_count);
-    try std.testing.expectEqualStrings("my.project", list.name(0));
-}
-
-test "tmux entries truncate projects beyond picker capacity" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    const names = [_][]const u8{"a"} ** (Projects.PROJECT_COUNT_PICKER_MAX + 1);
-    const projects = try test_projects(arena, "/dev/", &names);
-    const sessions: Tmux.SessionSet = .empty;
-
-    const list = try with_active_sessions(arena, projects, sessions);
-    try std.testing.expectEqual(@as(usize, Projects.PROJECT_COUNT_PICKER_MAX), list.len());
-}
-
-fn test_projects(allocator: Allocator, root: []const u8, project_names: []const []const u8) !Projects {
-    var bytes: std.Io.Writer.Allocating = .init(allocator);
-    defer bytes.deinit();
-    var offsets: std.ArrayList(u32) = .empty;
-    defer offsets.deinit(allocator);
-
-    try bytes.writer.writeAll(root);
-    try offsets.append(allocator, @intCast(bytes.written().len));
-    for (project_names) |project_name| {
-        try bytes.writer.writeAll(project_name);
-        try offsets.append(allocator, @intCast(bytes.written().len));
-    }
-
-    return .{
-        .bytes = try bytes.toOwnedSlice(),
-        .offsets = try offsets.toOwnedSlice(allocator),
-        .root_len = @intCast(root.len),
-    };
+fn deinit_test_batch(allocator: std.mem.Allocator, batch: *Projects.Batch) void {
+    batch.projects.deinit(allocator);
 }

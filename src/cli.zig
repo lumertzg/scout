@@ -4,10 +4,6 @@ const std = @import("std");
 
 pub const usage =
     \\Usage: scout [options]
-    \\       scout list [options]
-    \\
-    \\Commands:
-    \\  list        List folders without opening the picker
     \\
     \\Options:
     \\  --path DIR Directory to search (default: ~/Projects)
@@ -18,7 +14,6 @@ pub const usage =
 
 pub const Command = enum {
     run,
-    list,
     help,
 };
 
@@ -62,11 +57,6 @@ pub fn parse(args: []const []const u8) ParseError!Result {
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             result.command = .help;
             return result;
-        }
-
-        if (index == 0 and std.mem.eql(u8, arg, "list")) {
-            result.command = .list;
-            continue;
         }
 
         if (std.mem.eql(u8, arg, "--no-tmux")) {
@@ -119,16 +109,6 @@ test "parses no-tmux" {
     try std.testing.expect(result.no_tmux);
 }
 
-test "parses list with an optional root path" {
-    const default = try parse(&.{ "scout", "list" });
-    try std.testing.expectEqual(.list, default.command);
-    try std.testing.expectEqualStrings("~/Projects", default.root_path);
-
-    const rooted = try parse(&.{ "scout", "list", "--path", "/home/user/dev" });
-    try std.testing.expectEqual(.list, rooted.command);
-    try std.testing.expectEqualStrings("/home/user/dev", rooted.root_path);
-}
-
 test "parses help flags" {
     try std.testing.expectEqual(.help, (try parse(&.{ "scout", "-h" })).command);
     try std.testing.expectEqual(.help, (try parse(&.{ "scout", "--help" })).command);
@@ -143,6 +123,7 @@ test "path option permits a directory beginning with a dash" {
 test "rejects unknown options, positional arguments, and a missing path value" {
     try std.testing.expectError(error.UnknownOption, parse(&.{ "scout", "--wat" }));
     try std.testing.expectError(error.UnknownOption, parse(&.{ "scout", "--picker" }));
+    try std.testing.expectError(error.UnexpectedArgument, parse(&.{ "scout", "list" }));
     try std.testing.expectError(error.UnexpectedArgument, parse(&.{ "scout", "one" }));
     try std.testing.expectError(error.MissingPathValue, parse(&.{ "scout", "--path" }));
 }

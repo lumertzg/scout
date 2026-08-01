@@ -3,10 +3,12 @@
 Scout is a terminal project picker for tmux. It scans the directories directly
 below a root, filters them with a built-in fuzzy matcher, and opens the selected
 project in a tmux session. Active sessions appear first with a green marker.
+The selected Git repository shows its branch and status.
 
 ## Requirements
 
 - Zig 0.16
+- libgit2 development headers and library (tested with 1.9.6)
 - `tmux`, unless Scout runs with `--no-tmux`
 
 ## Build
@@ -37,22 +39,11 @@ Print the selected path instead of opening a tmux session:
 scout --no-tmux
 ```
 
-List project names without opening the picker:
-
-```sh
-scout list
-```
-
 ## Performance
 
-The picker is optimized for roots with up to 1024 projects. Scout stores project
-names in one contiguous buffer, keeps their offsets in a separate array, and
-constructs an absolute path only after selection. The matcher allocates its
-working buffers once and reuses them while the query changes.
-
-If a root contains more than 1024 projects, the picker uses the first 1024
-returned by directory enumeration. `scout list` still prints every discovered
-project.
+Scout streams directory batches into the picker, then enriches them with tmux
+and Git metadata in the background. Filtering reuses its working storage and
+constructs an absolute path only after selection.
 
 ## License
 

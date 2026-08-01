@@ -23,6 +23,16 @@ pub const active_selected: vaxis.Style = .{
     .bg = selected_background,
 };
 
+pub const git_branch_selected: vaxis.Style = .{
+    .fg = .{ .index = 5 },
+    .bg = selected_background,
+};
+
+pub const git_status_selected: vaxis.Style = .{
+    .fg = .{ .index = 1 },
+    .bg = selected_background,
+};
+
 pub const selected: vaxis.Style = .{
     .bg = selected_background,
 };

@@ -7,8 +7,9 @@ const Allocator = std.mem.Allocator;
 
 const Ui = @import("Ui.zig");
 
-pub const Loaded = Ui.Loaded;
+pub const Event = Ui.Event;
 pub const Loader = Ui.Loader;
+pub const LoadWorkers = Ui.LoadWorkers;
 pub const Selection = Ui.Selection;
 
 arena: Allocator,

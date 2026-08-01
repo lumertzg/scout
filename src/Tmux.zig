@@ -159,7 +159,7 @@ pub fn switch_to_project(self: *Self, project_path: []const u8) !void {
 /// must reap their child processes and flush pending output beforehand. Open
 /// descriptors need no attention because the standard library opens them
 /// CLOEXEC.
-pub fn replace_with_project_session(arena: Allocator, io: std.Io, project_path: []const u8) !void {
+pub fn replace_session(arena: Allocator, io: std.Io, project_path: []const u8) !void {
     const name = try session_name(arena, project_path);
     return std.process.replace(io, .{
         .argv = &.{ "tmux", "new-session", "-A", "-s", name, "-c", project_path },
