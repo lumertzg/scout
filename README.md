@@ -1,10 +1,9 @@
 # Scout
 
-Scout is a terminal project picker for tmux and Kitty. It scans the directories
-directly below a root and filters them with a built-in fuzzy matcher. It prints
-the selected path by default, or opens it in a terminal session with a selected
-backend. Active tmux sessions appear first with a green marker.
-The selected Git repository shows its branch and status.
+Scout is a terminal project picker with fuzzy search. It lists projects from a
+directory and either prints the selected path or opens it with tmux or Kitty.
+Active tmux sessions appear first and are marked in green. Git projects show
+their branch and status.
 
 ## Requirements
 
