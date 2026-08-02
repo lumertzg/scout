@@ -119,7 +119,7 @@ test "batched query growth filters once at flush" {
     try std.testing.expectEqual(PendingFilter.none, state.pending_filter);
 }
 
-test "ranking uses project names and ignores tmux markers" {
+test "ranking uses project names and ignores session markers" {
     const items = [_][]const u8{
         "archive-project",
         "my-project",
@@ -135,7 +135,7 @@ test "ranking uses project names and ignores tmux markers" {
 
     state.query.clearRetainingCapacity();
     state.folded_query.clearRetainingCapacity();
-    try state.append_query(std.testing.allocator, "tmux");
+    try state.append_query(std.testing.allocator, "session");
     state.refresh_matches();
     try std.testing.expectEqual(@as(usize, 0), state.match_count);
 }
@@ -254,8 +254,8 @@ test "published active entries keep the initial selection next to the input" {
     defer state.deinit(std.testing.allocator);
 
     const batch = entries.batches[0];
-    batch.projects.slice().items(.tmux_session_active)[1] = true;
-    batch.tmux_enrichment_complete.store(true, .release);
+    batch.projects.slice().items(.session_active)[1] = true;
+    batch.backend_enrichment_complete.store(true, .release);
     state.sort_matches_preserving_selection();
 
     try std.testing.expectEqual(@as(usize, 1), state.matches.items[0].entry_index);
@@ -275,8 +275,8 @@ test "published active entries preserve a moved selection" {
     try std.testing.expect(state.move_up());
     const selected_entry_location = state.selected_location().?;
     const batch = entries.batches[0];
-    batch.projects.slice().items(.tmux_session_active)[2] = true;
-    batch.tmux_enrichment_complete.store(true, .release);
+    batch.projects.slice().items(.session_active)[2] = true;
+    batch.backend_enrichment_complete.store(true, .release);
     state.sort_matches_preserving_selection();
 
     try std.testing.expectEqual(@as(usize, 2), state.matches.items[0].entry_index);
@@ -293,8 +293,8 @@ test "clearing a query restores enriched empty-query order" {
     defer state.deinit(std.testing.allocator);
 
     const batch = entries.batches[0];
-    batch.projects.slice().items(.tmux_session_active)[1] = true;
-    batch.tmux_enrichment_complete.store(true, .release);
+    batch.projects.slice().items(.session_active)[1] = true;
+    batch.backend_enrichment_complete.store(true, .release);
     state.sort_matches_preserving_selection();
     try std.testing.expectEqual(@as(usize, 1), state.matches.items[0].entry_index);
 
@@ -348,14 +348,14 @@ fn test_entries(allocator: Allocator, project_names: []const []const u8, active_
         for (names, name_start..) |name, entry_index| {
             batch.projects.appendAssumeCapacity(.{
                 .name = name,
-                .tmux_session_active = entry_index < active_count,
+                .session_active = entry_index < active_count,
             });
             locations[entry_index] = .{
                 .batch = batch,
                 .name_index = entry_index - name_start,
             };
         }
-        if (active_count > name_start) batch.tmux_enrichment_complete.store(true, .release);
+        if (active_count > name_start) batch.backend_enrichment_complete.store(true, .release);
         batch_pointer.* = batch;
         initialized_batch_count += 1;
     }

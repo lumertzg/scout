@@ -160,7 +160,7 @@ fn draw_item(state: *State, window: vaxis.Window, row: u16, match: State.RankedM
         .wrap = .none,
     }).col;
 
-    const active = state.entries.entry_is_tmux_session_active(match.entry_index);
+    const active = state.entries.entry_is_session_active(match.entry_index);
     const marker_style = if (!active) base_style else if (is_selected) Theme.active_selected else Theme.active;
 
     column = print_text(window, row, column, if (active) ACTIVE_MARKER else "  ", marker_style);

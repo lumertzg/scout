@@ -26,7 +26,7 @@ pub const ViewState = struct {
     entry_count: usize = 0,
     discovery_complete: bool = false,
     enrichment_complete: bool = false,
-    /// Whether published tmux state may have changed match order.
+    /// Whether published terminal session state may have changed match order.
     ordering_pending: bool = false,
     ready: ?State = null,
 
@@ -92,11 +92,11 @@ pub const ViewState = struct {
         }
     }
 
-    /// Observes published tmux metadata and schedules a stable reorder.
-    pub fn finish_batch_tmux_enrichment(self: *ViewState, batch: *Projects.Batch) void {
+    /// Observes published backend metadata and schedules a stable reorder.
+    pub fn finish_batch_backend_enrichment(self: *ViewState, batch: *Projects.Batch) void {
         assert(batch.batch_index < self.batches.items.len);
         assert(self.batches.items[batch.batch_index] == batch);
-        assert(batch.tmux_enrichment_complete.load(.acquire));
+        assert(batch.backend_enrichment_complete.load(.acquire));
         self.ordering_pending = true;
     }
 

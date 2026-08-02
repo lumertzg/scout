@@ -28,13 +28,13 @@ pub const List = struct {
         return location.batch.projects.slice().items(.name)[location.name_index];
     }
 
-    /// Returns whether the entry has a published active tmux session.
-    pub fn entry_is_tmux_session_active(self: List, entry_index: usize) bool {
+    /// Returns whether the entry has a published active terminal session.
+    pub fn entry_is_session_active(self: List, entry_index: usize) bool {
         assert(entry_index < self.locations.len);
         const location = self.locate_entry(entry_index) orelse unreachable;
-        if (!location.batch.tmux_enrichment_complete.load(.acquire)) return false;
+        if (!location.batch.backend_enrichment_complete.load(.acquire)) return false;
 
-        return location.batch.projects.slice().items(.tmux_session_active)[location.name_index];
+        return location.batch.projects.slice().items(.session_active)[location.name_index];
     }
 
     /// Returns the published branch name, if known.
@@ -115,12 +115,12 @@ test "active state is hidden until enrichment is published" {
     };
     const list: List = .{ .batches = &batch_pointers, .locations = &locations };
 
-    batch.projects.slice().items(.tmux_session_active)[1] = true;
-    try std.testing.expect(!list.entry_is_tmux_session_active(1));
+    batch.projects.slice().items(.session_active)[1] = true;
+    try std.testing.expect(!list.entry_is_session_active(1));
 
-    batch.tmux_enrichment_complete.store(true, .release);
-    try std.testing.expect(list.entry_is_tmux_session_active(1));
-    try std.testing.expect(!list.entry_is_tmux_session_active(0));
+    batch.backend_enrichment_complete.store(true, .release);
+    try std.testing.expect(list.entry_is_session_active(1));
+    try std.testing.expect(!list.entry_is_session_active(0));
 }
 
 test "git metadata is hidden until enrichment is published" {

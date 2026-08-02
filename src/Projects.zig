@@ -14,7 +14,7 @@ const DIRECTORY_READER_BYTES = 4096;
 /// Display and enrichment data for one direct child directory.
 pub const Project = struct {
     name: []const u8,
-    tmux_session_active: bool = false,
+    session_active: bool = false,
     git_branch: ?[]const u8 = null,
     git_state: Git.State = .{},
 };
@@ -27,8 +27,8 @@ pub const Batch = struct {
     root_path: []const u8,
     /// Structure-of-arrays project storage used by enrichment and rendering.
     projects: std.MultiArrayList(Project),
-    /// Set with release ordering after all tmux fields in this batch are ready.
-    tmux_enrichment_complete: std.atomic.Value(bool) = .init(false),
+    /// Set with release ordering after all backend fields in this batch are ready.
+    backend_enrichment_complete: std.atomic.Value(bool) = .init(false),
     /// Set with release ordering after all Git fields in this batch are ready.
     git_enrichment_complete: std.atomic.Value(bool) = .init(false),
 };

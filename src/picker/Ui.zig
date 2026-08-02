@@ -51,14 +51,16 @@ pub const Event = union(enum) {
     key_press: vaxis.Key,
     winsize: vaxis.Winsize,
     batch: *Projects.Batch,
-    /// Batch whose tmux fields are now published.
-    batch_tmux_enriched: *Projects.Batch,
+    /// Batch whose terminal backend fields are now published.
+    batch_backend_enriched: *Projects.Batch,
     /// Batch whose Git fields are now published.
     batch_git_enriched: *Projects.Batch,
     /// Final filesystem discovery result.
     discovery_result: anyerror!void,
-    /// Final tmux and Git enrichment result.
-    enrichment_result: anyerror!void,
+    /// Final terminal backend enrichment result.
+    backend_enrichment_result: anyerror!void,
+    /// Final Git enrichment result.
+    git_enrichment_result: anyerror!void,
 };
 
 pub fn init(allocator: Allocator, io: std.Io, environ_map: *std.process.Environ.Map, loader: Loader) Self {
@@ -94,6 +96,8 @@ pub fn pick(self: Self) !?Selection {
     defer view_state.deinit(self.allocator);
 
     var screen_ready = false;
+    var backend_enrichment_complete = false;
+    var git_enrichment_complete = false;
     while (true) {
         try loop.pollEvent();
 
@@ -120,8 +124,8 @@ pub fn pick(self: Self) !?Selection {
                     try view_state.append_batch(self.allocator, batch);
                     redraw = true;
                 },
-                .batch_tmux_enriched => |batch| {
-                    view_state.finish_batch_tmux_enrichment(batch);
+                .batch_backend_enriched => |batch| {
+                    view_state.finish_batch_backend_enrichment(batch);
                     redraw = true;
                 },
                 .batch_git_enriched => |batch| {
@@ -134,9 +138,14 @@ pub fn pick(self: Self) !?Selection {
                     if (view_state.entry_count == 0) return null;
                     redraw = true;
                 },
-                .enrichment_result => |enrichment_result| {
-                    try enrichment_result;
-                    view_state.enrichment_complete = true;
+                .backend_enrichment_result => {
+                    backend_enrichment_complete = true;
+                    view_state.enrichment_complete = git_enrichment_complete;
+                    redraw = true;
+                },
+                .git_enrichment_result => {
+                    git_enrichment_complete = true;
+                    view_state.enrichment_complete = backend_enrichment_complete;
                     redraw = true;
                 },
             }

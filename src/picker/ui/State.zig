@@ -302,8 +302,8 @@ pub const State = struct {
     }
 
     fn less_than(context: SortContext, left: RankedMatch, right: RankedMatch) bool {
-        const left_active = context.entries.entry_is_tmux_session_active(left.entry_index);
-        const right_active = context.entries.entry_is_tmux_session_active(right.entry_index);
+        const left_active = context.entries.entry_is_session_active(left.entry_index);
+        const right_active = context.entries.entry_is_session_active(right.entry_index);
 
         if (left_active != right_active) return left_active;
         if (context.query_empty) return left.entry_index < right.entry_index;

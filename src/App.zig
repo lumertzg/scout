@@ -6,8 +6,10 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const vaxis = @import("vaxis");
 
+const Backend = @import("Backend.zig").Backend;
 const Dir = @import("dir.zig");
 const Git = @import("git.zig");
+const Kitty = @import("Kitty.zig");
 const Picker = @import("picker/Picker.zig");
 const Projects = @import("Projects.zig");
 const Tmux = @import("Tmux.zig");
@@ -19,12 +21,14 @@ io: std.Io,
 home: ?[]const u8,
 /// Whether Scout started inside a tmux client.
 inside_tmux: bool,
+environ_map: *std.process.Environ.Map,
 picker: Picker,
 
 const SessionSource = union(enum) {
     none,
-    direct,
-    open_control,
+    tmux_direct,
+    tmux_control,
+    kitty,
 };
 
 const LoadContext = struct {
@@ -32,6 +36,8 @@ const LoadContext = struct {
     root_path: []const u8,
     session_source: SessionSource,
     tmux_control: ?*Tmux = null,
+    kitty: ?Kitty = null,
+    kitty_sessions: ?Kitty.SessionSet = null,
 };
 
 const WorkerFutures = struct {
@@ -57,6 +63,7 @@ pub fn init(arena: Allocator, io: std.Io, environ_map: *std.process.Environ.Map)
         .io = io,
         .home = environ_map.get("HOME"),
         .inside_tmux = environ_map.get("TMUX") != null,
+        .environ_map = environ_map,
         .picker = .init(arena, io, environ_map),
     };
 }
@@ -82,15 +89,30 @@ pub fn pick_path(self: Self, root_path: []const u8) !?[]const u8 {
     });
 }
 
-/// Lets the user choose a project and opens its tmux session.
+/// Lets the user choose a project and opens it with a terminal backend.
 ///
 /// On success this may replace the Scout process and therefore not return.
-pub fn open_project_in_tmux(self: Self, root_path: []const u8) !void {
+pub fn open_project(self: Self, root_path: []const u8, backend: Backend) !void {
+    const kitty: ?Kitty = if (backend == .kitty) .init(self.arena, self.io, self.environ_map) else null;
+
     var context: LoadContext = .{
         .app = self,
         .root_path = root_path,
-        .session_source = if (self.inside_tmux) .open_control else .direct,
+        .session_source = switch (backend) {
+            .tmux => if (self.inside_tmux) .tmux_control else .tmux_direct,
+            .kitty => .kitty,
+            .path => .none,
+        },
+        .kitty = kitty,
     };
+
+    // TTY remote control must finish before Vaxis starts reading terminal
+    // input. A private Kitty control channel has no such reader conflict.
+    if (kitty) |client| {
+        if (!client.can_list_sessions_concurrently()) {
+            context.kitty_sessions = client.list_sessions() catch .empty;
+        }
+    }
 
     const selection_result = self.picker.pick(.{
         .context = &context,
@@ -106,10 +128,14 @@ pub fn open_project_in_tmux(self: Self, root_path: []const u8) !void {
         selection.project_name,
     });
 
-    if (context.tmux_control) |control| {
-        try control.switch_to_project(project_path);
-    } else {
-        try Tmux.replace_session(self.arena, self.io, project_path);
+    switch (backend) {
+        .tmux => if (context.tmux_control) |control| {
+            try control.switch_to_project(project_path);
+        } else {
+            try Tmux.replace_session(self.arena, self.io, project_path);
+        },
+        .kitty => try context.kitty.?.open_project(project_path),
+        .path => unreachable,
     }
 }
 
@@ -149,8 +175,16 @@ fn loading_worker(ctx: *LoadContext, loop: *PickerLoop) void {
     loop.postEvent(.{ .discovery_result = discovery_result }) catch {};
     if (discovery_result) |_| {} else |_| return;
 
-    const enrichment_result = enrich_batches(ctx, loop, batches.items);
-    loop.postEvent(.{ .enrichment_result = enrichment_result }) catch {};
+    var enrichment_group: std.Io.Group = .init;
+    enrichment_group.concurrent(app.io, backend_enrichment_worker, .{ ctx, loop, batches.items }) catch |err| {
+        loop.postEvent(.{ .backend_enrichment_result = err }) catch {};
+        loop.postEvent(.{ .git_enrichment_result = err }) catch {};
+        return;
+    };
+    enrichment_group.concurrent(app.io, git_enrichment_worker, .{ ctx, loop, batches.items }) catch |err| {
+        loop.postEvent(.{ .git_enrichment_result = err }) catch {};
+    };
+    enrichment_group.await(app.io) catch {};
 }
 
 fn emit_batches(ctx: *LoadContext, loop: *PickerLoop, batches: *std.ArrayList(*Projects.Batch)) !void {
@@ -167,46 +201,48 @@ fn emit_batches(ctx: *LoadContext, loop: *PickerLoop, batches: *std.ArrayList(*P
     try Projects.discover_batches(app.arena, directory, &emit_context);
 }
 
-fn enrich_batches(ctx: *LoadContext, loop: *PickerLoop, batches: []const *Projects.Batch) !void {
+fn backend_enrichment_worker(ctx: *LoadContext, loop: *PickerLoop, batches: []const *Projects.Batch) void {
+    const result = enrich_backend_batches(ctx, loop, batches);
+    loop.postEvent(.{ .backend_enrichment_result = result }) catch {};
+}
+
+fn git_enrichment_worker(ctx: *LoadContext, loop: *PickerLoop, batches: []const *Projects.Batch) void {
+    const result = enrich_git_batches(ctx.app, loop, batches);
+    loop.postEvent(.{ .git_enrichment_result = result }) catch {};
+}
+
+fn enrich_backend_batches(ctx: *LoadContext, loop: *PickerLoop, batches: []const *Projects.Batch) !void {
     const app = ctx.app;
     const sessions: Tmux.SessionSet = switch (ctx.session_source) {
         .none => .empty,
-        .direct => try Tmux.list_sessions_direct(app.arena, app.io),
-        .open_control => sessions: {
+        .tmux_direct => try Tmux.list_sessions_direct(app.arena, app.io),
+        .tmux_control => sessions: {
             const control = try Tmux.open(app.arena, app.io);
             ctx.tmux_control = control;
             break :sessions try control.list_sessions();
         },
+        .kitty => if (ctx.kitty_sessions) |sessions| sessions else try ctx.kitty.?.list_sessions(),
     };
 
     for (batches) |batch| {
         var fields = batch.projects.slice();
         var session_buffer: [std.Io.Dir.max_name_bytes]u8 = undefined;
-        for (fields.items(.name), fields.items(.tmux_session_active)) |project_name, *active| {
-            active.* = sessions.contains(Tmux.session_name_buffered(project_name, &session_buffer));
+        for (fields.items(.name), fields.items(.session_active)) |project_name, *active| {
+            active.* = switch (ctx.session_source) {
+                .kitty => sessions.contains(project_name),
+                else => sessions.contains(Tmux.session_name_buffered(project_name, &session_buffer)),
+            };
         }
-        batch.tmux_enrichment_complete.store(true, .release);
-        try loop.postEvent(.{ .batch_tmux_enriched = batch });
-    }
-
-    var git: Git = try .init();
-    defer git.deinit();
-
-    // The initial selection is active when any tmux session exists, so enrich
-    // batches containing active projects before the remaining background work.
-    for (batches) |batch| {
-        if (batch_has_active_project(batch)) try enrich_git_batch(app, loop, &git, batch);
-    }
-    for (batches) |batch| {
-        if (!batch_has_active_project(batch)) try enrich_git_batch(app, loop, &git, batch);
+        batch.backend_enrichment_complete.store(true, .release);
+        try loop.postEvent(.{ .batch_backend_enriched = batch });
     }
 }
 
-fn batch_has_active_project(batch: *Projects.Batch) bool {
-    for (batch.projects.slice().items(.tmux_session_active)) |active| {
-        if (active) return true;
-    }
-    return false;
+fn enrich_git_batches(app: Self, loop: *PickerLoop, batches: []const *Projects.Batch) !void {
+    var git: Git = try .init();
+    defer git.deinit();
+
+    for (batches) |batch| try enrich_git_batch(app, loop, &git, batch);
 }
 
 fn enrich_git_batch(app: Self, loop: *PickerLoop, git: *Git, batch: *Projects.Batch) !void {
@@ -225,6 +261,7 @@ fn enrich_git_batch(app: Self, loop: *PickerLoop, git: *Git, batch: *Projects.Ba
 test {
     _ = Dir;
     _ = Git;
+    _ = Kitty;
     _ = Picker;
     _ = Projects;
     _ = Tmux;

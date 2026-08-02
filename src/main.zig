@@ -27,7 +27,7 @@ pub fn main(init: std.process.Init) !void {
     var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
 
     const args = try init.minimal.args.toSlice(arena);
-    const cli_result = cli.parse(args) catch |err| {
+    const cli_result = cli.parse_with_env(args, init.environ_map) catch |err| {
         try cli.print_error(&stderr_writer.interface, err);
         try stderr_writer.interface.flush();
         std.process.exit(2);
@@ -39,15 +39,16 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    if (cli_result.no_tmux) {
-        const project_path = try app.pick_path(cli_result.root_path) orelse return;
-        try stdout_writer.interface.writeAll(project_path);
-        try stdout_writer.interface.writeByte('\n');
-        try stdout_writer.interface.flush();
-        return;
+    switch (cli_result.backend) {
+        .path => {
+            const project_path = try app.pick_path(cli_result.root_path) orelse return;
+            try stdout_writer.interface.writeAll(project_path);
+            try stdout_writer.interface.writeByte('\n');
+            try stdout_writer.interface.flush();
+        },
+        .tmux => try app.open_project(cli_result.root_path, .tmux),
+        .kitty => try app.open_project(cli_result.root_path, .kitty),
     }
-
-    try app.open_project_in_tmux(cli_result.root_path);
 }
 
 test {
