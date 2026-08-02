@@ -39,7 +39,9 @@ SCOUT_BACKEND=kitty scout
 SCOUT_BACKEND=kitty scout --backend=path
 ```
 
-### Path backend
+<details>
+<summary>Path backend</summary>
+
 
 Print the selected project path without opening a terminal session. This is
 the default backend:
@@ -54,7 +56,11 @@ You can also select it explicitly:
 scout --backend=path
 ```
 
-### Tmux backend
+</details>
+
+<details>
+<summary>Tmux backend</summary>
+
 
 Open the selected project in a tmux session:
 
@@ -62,7 +68,11 @@ Open the selected project in a tmux session:
 scout --backend=tmux
 ```
 
-### Kitty backend
+</details>
+
+<details>
+<summary>Kitty backend</summary>
+
 
 The Kitty backend uses the custom kitten in `kitty/scout.py`. Kitty loads
 custom kittens from its config directory, so install the file there first:
@@ -117,6 +127,8 @@ Recommended Kitty configuration for showing only the active session's tabs:
 ```conf
 tab_bar_filter session:~
 ```
+
+</details>
 
 ## Performance
 
