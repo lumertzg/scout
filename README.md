@@ -2,8 +2,8 @@
 
 Scout is a terminal project picker with fuzzy search. It lists projects from a
 directory and either prints the selected path or opens it with tmux or Kitty.
-Active tmux sessions appear first and are marked in green. Git projects show
-their branch and status.
+Active tmux and Kitty sessions appear first and are marked in green. Git
+projects show their branch and status.
 
 ## Requirements
 
@@ -12,6 +12,7 @@ their branch and status.
 - `tmux` when Scout runs with `--backend=tmux`
 - Kitty 0.43 or newer and its `kitten` command when Scout runs with
   `--backend=kitty`
+- A remote-control socket through `KITTY_LISTEN_ON` for the Kitty backend
 
 ## Build
 
@@ -73,58 +74,56 @@ scout --backend=tmux
 <summary>Kitty backend</summary>
 
 
-The Kitty backend uses the custom kitten in `kitty/scout.py`. Kitty loads
-custom kittens from its config directory, so install the file there first:
+The Kitty backend uses Kitty's native remote-control commands to list active
+sessions and switch projects through Kitty's session action.
 
-```sh
-mkdir -p ~/.config/kitty
-cp kitty/scout.py ~/.config/kitty/scout.py
-```
-
-Use a symlink instead if you want Kitty to use the working copy:
-
-```sh
-ln -sfn "$PWD/kitty/scout.py" ~/.config/kitty/scout.py
-```
-
-The kitten lists active Kitty sessions and creates or switches to a basic
-`.session` file under `/tmp/scout/kitty-sessions`. Scout talks only to this
-kitten; the Python code handles the Kitty session action inside Kitty.
-
-The recommended setup grants access only to Scout when it runs as an overlay:
+The Kitty backend requires a remote-control socket. Configure one with
+`listen_on` and allow socket connections with `allow_remote_control`. The
+`socket-only` mode shown below avoids enabling remote control through the
+terminal. On Linux, prefer an abstract Unix socket:
 
 ```conf
-map ctrl+b>f launch --type=overlay --allow-remote-control --cwd=current scout --backend=kitty
+allow_remote_control socket-only
+listen_on unix:@scout
 ```
 
-`--allow-remote-control` creates a private connection for the launched child,
-which `kitten @` uses through `KITTY_LISTEN_ON`. This avoids enabling remote
-control for every program running inside Kitty.
-
-To run Scout directly from a Kitty shell, enable remote control in
-`kitty.conf`, then reload or restart Kitty:
+On macOS and systems without abstract Unix sockets, use a filesystem-backed
+Unix socket:
 
 ```conf
-allow_remote_control yes
+allow_remote_control socket-only
+listen_on unix:scout
 ```
+
+`listen_on` applies to all Kitty instances and can be overridden with Kitty's
+`--listen-on` command-line option. Kitty expands environment variables and
+resolves relative Unix socket paths from the temporary directory. Unless the
+address contains `{kitty_pid}`, Kitty appends its process ID to the address.
+
+Restart Kitty after changing `listen_on`. Reloading the config does not apply
+the change. Kitty exports the resolved socket address as `KITTY_LISTEN_ON` to
+programs launched inside it, which is how Scout finds the socket.
+
+You can run Scout directly from a Kitty shell:
 
 ```sh
 scout --backend=kitty
 ```
 
-For direct shell launches, Scout reads active Kitty sessions before opening the
-picker so the remote-control reply cannot conflict with picker input. The
-mapped overlay can read them in the background through its private channel.
+You can also launch Scout as an overlay:
 
-Reload Kitty after installing or changing the kitten:
-
-```sh
-kitty @ load-config
+```conf
+map ctrl+b>f launch --type=overlay --cwd=current scout --backend=kitty
 ```
 
-Recommended Kitty configuration for showing only the active session's tabs:
+Scout requires `KITTY_LISTEN_ON` for every Kitty operation. It reads active
+sessions in the background through that socket, so remote-control
+replies cannot conflict with picker input.
+
+Recommended Kitty configuration for showing the active session's tabs along
+with tabs that do not belong to a session:
 ```conf
-tab_bar_filter session:~
+tab_bar_filter session:~ or session:^$
 ```
 
 </details>

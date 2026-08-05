@@ -37,7 +37,6 @@ const LoadContext = struct {
     session_source: SessionSource,
     tmux_control: ?*Tmux = null,
     kitty: ?Kitty = null,
-    kitty_sessions: ?Kitty.SessionSet = null,
 };
 
 const WorkerFutures = struct {
@@ -93,7 +92,7 @@ pub fn pick_path(self: Self, root_path: []const u8) !?[]const u8 {
 ///
 /// On success this may replace the Scout process and therefore not return.
 pub fn open_project(self: Self, root_path: []const u8, backend: Backend) !void {
-    const kitty: ?Kitty = if (backend == .kitty) .init(self.arena, self.io, self.environ_map) else null;
+    const kitty: ?Kitty = if (backend == .kitty) try .init(self.arena, self.io, self.environ_map) else null;
 
     var context: LoadContext = .{
         .app = self,
@@ -105,14 +104,6 @@ pub fn open_project(self: Self, root_path: []const u8, backend: Backend) !void {
         },
         .kitty = kitty,
     };
-
-    // TTY remote control must finish before Vaxis starts reading terminal
-    // input. A private Kitty control channel has no such reader conflict.
-    if (kitty) |client| {
-        if (!client.can_list_sessions_concurrently()) {
-            context.kitty_sessions = client.list_sessions() catch .empty;
-        }
-    }
 
     const selection_result = self.picker.pick(.{
         .context = &context,
@@ -221,7 +212,8 @@ fn enrich_backend_batches(ctx: *LoadContext, loop: *PickerLoop, batches: []const
             ctx.tmux_control = control;
             break :sessions try control.list_sessions();
         },
-        .kitty => if (ctx.kitty_sessions) |sessions| sessions else try ctx.kitty.?.list_sessions(),
+        // Session marks are optional; selection must not fail when Kitty does.
+        .kitty => ctx.kitty.?.list_sessions() catch .empty,
     };
 
     for (batches) |batch| {
