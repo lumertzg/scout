@@ -7,6 +7,12 @@ const SCORE_MATCH = 16;
 const BONUS_CONSECUTIVE = 24;
 const GAP_PENALTY_MAX = 16;
 const LEADING_PENALTY_MAX = 16;
+
+const AlignmentOptions = struct {
+    query_is_folded: bool = false,
+    collect_positions: bool = false,
+};
+
 const BOUNDARY_BONUSES: [256]u8 = blk: {
     var bonuses = [_]u8{0} ** 256;
 
@@ -34,46 +40,79 @@ pub const Result = struct {
 
 /// Scores a project name while favoring compact matches.
 pub fn rank(query: []const u8, candidate: []const u8) ?Result {
-    return find_alignment(false, false, query, query, candidate, 0, candidate.len, {});
+    return find_alignment(.{}, query, query, candidate, 0, candidate.len, {});
 }
 
 /// Scores with a query folded to lowercase ASCII.
 pub fn rank_folded(query: []const u8, folded_query: []const u8, candidate: []const u8) ?Result {
     assert(query.len == folded_query.len);
-    return find_alignment(true, false, query, folded_query, candidate, 0, candidate.len, {});
+    return find_alignment(
+        .{ .query_is_folded = true },
+        query,
+        folded_query,
+        candidate,
+        0,
+        candidate.len,
+        {},
+    );
 }
 
 /// Scores and writes the byte positions used by the selected alignment.
-pub fn rank_folded_positions(query: []const u8, folded_query: []const u8, candidate: []const u8, output: []u16) ?Result {
+pub fn rank_folded_positions(
+    query: []const u8,
+    folded_query: []const u8,
+    candidate: []const u8,
+    output: []u16,
+) ?Result {
     assert(query.len == folded_query.len);
     assert(output.len >= query.len);
     assert(candidate.len <= std.math.maxInt(u16));
-    return find_alignment(true, true, query, folded_query, candidate, 0, candidate.len, output);
+    return find_alignment(
+        .{ .query_is_folded = true, .collect_positions = true },
+        query,
+        folded_query,
+        candidate,
+        0,
+        candidate.len,
+        output,
+    );
 }
 
 /// Writes the byte positions used by the highest-ranked alignment.
 pub fn positions(query: []const u8, candidate: []const u8, output: []u16) ?[]const u16 {
     assert(output.len >= query.len);
     assert(candidate.len <= std.math.maxInt(u16));
-    _ = find_alignment(false, true, query, query, candidate, 0, candidate.len, output) orelse return null;
+    _ = find_alignment(
+        .{ .collect_positions = true },
+        query,
+        query,
+        candidate,
+        0,
+        candidate.len,
+        output,
+    ) orelse return null;
     return output[0..query.len];
 }
 
 /// Writes positions using a folded query.
-pub fn positions_folded(query: []const u8, folded_query: []const u8, candidate: []const u8, output: []u16) ?[]const u16 {
+pub fn positions_folded(
+    query: []const u8,
+    folded_query: []const u8,
+    candidate: []const u8,
+    output: []u16,
+) ?[]const u16 {
     _ = rank_folded_positions(query, folded_query, candidate, output) orelse return null;
     return output[0..query.len];
 }
 
 fn find_alignment(
-    comptime query_is_folded: bool,
-    comptime collect_positions: bool,
+    comptime options: AlignmentOptions,
     query: []const u8,
     match_query: []const u8,
     candidate: []const u8,
     window_start: usize,
     window_end: usize,
-    positions_output: if (collect_positions) []u16 else void,
+    positions_output: if (options.collect_positions) []u16 else void,
 ) ?Result {
     assert(query.len == match_query.len);
     assert(window_start <= window_end);
@@ -81,9 +120,21 @@ fn find_alignment(
     if (query.len == 0) return .{ .score = 0, .start = 0, .end = 0 };
     if (query.len > window_end - window_start) return null;
 
-    const forward_end = find_forward_end(query_is_folded, match_query, candidate, window_start, window_end) orelse return null;
+    const forward_end = find_forward_end(
+        options.query_is_folded,
+        match_query,
+        candidate,
+        window_start,
+        window_end,
+    ) orelse return null;
 
-    const start = find_backward_start(query_is_folded, match_query, candidate, window_start, forward_end);
+    const start = find_backward_start(
+        options.query_is_folded,
+        match_query,
+        candidate,
+        window_start,
+        forward_end,
+    );
 
     var query_index: usize = 0;
     var previous_match: ?usize = null;
@@ -91,9 +142,9 @@ fn find_alignment(
     var end = start;
 
     for (start..forward_end) |candidate_index| {
-        if (!equal_fold(query_is_folded, candidate[candidate_index], match_query[query_index])) continue;
+        if (!equal_fold(options.query_is_folded, candidate[candidate_index], match_query[query_index])) continue;
 
-        if (comptime collect_positions) {
+        if (comptime options.collect_positions) {
             positions_output[query_index] = @intCast(candidate_index);
         }
 
@@ -121,7 +172,13 @@ fn find_alignment(
     return .{ .score = score, .start = start, .end = end };
 }
 
-fn find_forward_end(comptime query_is_folded: bool, match_query: []const u8, candidate: []const u8, window_start: usize, window_end: usize) ?usize {
+fn find_forward_end(
+    comptime query_is_folded: bool,
+    match_query: []const u8,
+    candidate: []const u8,
+    window_start: usize,
+    window_end: usize,
+) ?usize {
     var query_index: usize = 0;
     for (window_start..window_end) |candidate_index| {
         if (!equal_fold(query_is_folded, candidate[candidate_index], match_query[query_index])) continue;
@@ -132,7 +189,13 @@ fn find_forward_end(comptime query_is_folded: bool, match_query: []const u8, can
     return null;
 }
 
-fn find_backward_start(comptime query_is_folded: bool, match_query: []const u8, candidate: []const u8, window_start: usize, forward_end: usize) usize {
+fn find_backward_start(
+    comptime query_is_folded: bool,
+    match_query: []const u8,
+    candidate: []const u8,
+    window_start: usize,
+    forward_end: usize,
+) usize {
     assert(match_query.len > 0);
     assert(window_start < forward_end);
     assert(forward_end <= candidate.len);

@@ -23,8 +23,6 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.root_module.addImport("vaxis", vaxis.module("vaxis"));
-    exe.root_module.linkSystemLibrary("c", .{});
-    exe.root_module.linkSystemLibrary("git2", .{});
 
     b.installArtifact(exe);
 
@@ -47,8 +45,6 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe_tests.root_module.addImport("vaxis", vaxis.module("vaxis"));
-    exe_tests.root_module.linkSystemLibrary("c", .{});
-    exe_tests.root_module.linkSystemLibrary("git2", .{});
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);
 
     const fmt_check = b.addFmt(.{ .paths = &.{ "src", "build.zig", "build.zig.zon" } });

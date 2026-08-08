@@ -2,47 +2,23 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const assert = std.debug.assert;
 
 const Dir = @import("dir.zig");
-const Git = @import("git.zig");
 
-/// Maximum number of filesystem entries read and emitted at once.
 pub const BATCH_SIZE = 64;
 const DIRECTORY_READER_BYTES = 4096;
 
-/// Display and enrichment data for one direct child directory.
-pub const Project = struct {
-    name: []const u8,
-    session_active: bool = false,
-    git_branch: ?[]const u8 = null,
-    git_state: Git.State = .{},
-};
-
-/// One ordered group of projects emitted during streaming discovery.
+/// Immutable, arena-owned project names from one directory read.
 pub const Batch = struct {
-    /// Zero-based emission order; consumers use it to append batches safely.
-    batch_index: usize,
-    /// Absolute root path shared by every project in this batch.
     root_path: []const u8,
-    /// Structure-of-arrays project storage used by enrichment and rendering.
-    projects: std.MultiArrayList(Project),
-    /// Set with release ordering after all backend fields in this batch are ready.
-    backend_enrichment_complete: std.atomic.Value(bool) = .init(false),
-    /// Set with release ordering after all Git fields in this batch are ready.
-    git_enrichment_complete: std.atomic.Value(bool) = .init(false),
+    names: []const []const u8,
 };
 
-/// Emits arena-owned batches of immediate child directory names.
-///
-/// Calls `emit_context.emit_batch` once per non-empty batch and waits for each
-/// call to finish before it reuses the directory reader's entry buffer.
+/// Emits immediate child directories in filesystem discovery order.
 pub fn discover_batches(arena: Allocator, directory: Dir, emit_context: anytype) !void {
     var reader_buffer: [DIRECTORY_READER_BYTES]u8 align(@alignOf(usize)) = undefined;
     var reader = std.Io.Dir.Reader.init(directory.handle, &reader_buffer);
-
     var entries: [BATCH_SIZE]std.Io.Dir.Entry = undefined;
-    var batch_index: usize = 0;
 
     while (true) {
         const entry_count = try reader.read(directory.io, &entries);
@@ -51,126 +27,48 @@ pub fn discover_batches(arena: Allocator, directory: Dir, emit_context: anytype)
             continue;
         }
 
-        var project_count: usize = 0;
-        var project_names_size_bytes: usize = 0;
+        var accepted: [BATCH_SIZE][]const u8 = undefined;
+        var accepted_count: usize = 0;
+        var byte_count: usize = 0;
 
         for (entries[0..entry_count]) |entry| {
-            if (entry.kind != .directory) continue;
-            project_count += 1;
-            project_names_size_bytes = try std.math.add(usize, project_names_size_bytes, entry.name.len);
+            if (!std.unicode.utf8ValidateSlice(entry.name)) continue;
+            if (!is_project(directory, entry)) continue;
+
+            accepted[accepted_count] = entry.name;
+            accepted_count += 1;
+
+            byte_count = try std.math.add(usize, byte_count, entry.name.len);
         }
 
-        if (project_count == 0) continue;
+        if (accepted_count == 0) continue;
+
+        const names = try arena.alloc([]const u8, accepted_count);
+        const bytes = try arena.alloc(u8, byte_count);
+        var offset: usize = 0;
+
+        for (accepted[0..accepted_count], names) |name, *owned_name| {
+            @memcpy(bytes[offset..][0..name.len], name);
+            owned_name.* = bytes[offset..][0..name.len];
+            offset += name.len;
+        }
 
         const batch = try arena.create(Batch);
         batch.* = .{
-            .batch_index = batch_index,
             .root_path = directory.path,
-            .projects = try std.MultiArrayList(Project).initCapacity(arena, project_count),
+            .names = names,
         };
 
-        const project_names = try arena.alloc(u8, project_names_size_bytes);
-        var project_name_offset: usize = 0;
-        for (entries[0..entry_count]) |entry| {
-            if (entry.kind != .directory) continue;
-
-            const project_name_end = project_name_offset + entry.name.len;
-            @memcpy(project_names[project_name_offset..project_name_end], entry.name);
-
-            batch.projects.appendAssumeCapacity(.{
-                .name = project_names[project_name_offset..project_name_end],
-            });
-
-            project_name_offset = project_name_end;
-        }
-
-        assert(project_name_offset == project_names.len);
-
         try emit_context.emit_batch(batch);
-        batch_index += 1;
     }
 }
 
-test "streaming discovery emits several stable batches in reader order" {
-    const io = std.testing.io;
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
+fn is_project(directory: Dir, entry: std.Io.Dir.Entry) bool {
+    if (entry.kind == .directory) return true;
+    if (entry.kind != .sym_link) return false;
 
-    var tmp = std.testing.tmpDir(.{ .iterate = true });
-    defer tmp.cleanup();
-    var name_buffer: [32]u8 = undefined;
-    for (0..BATCH_SIZE * 2 + 5) |project_index| {
-        const project_name = try std.fmt.bufPrint(&name_buffer, "project-{d:0>4}", .{project_index});
-        try tmp.dir.createDir(io, project_name, .default_dir);
-    }
-
-    const root_path = try test_root_path(arena, tmp.sub_path[0..]);
-    var directory = try Dir.open_absolute(arena, io, null, root_path);
-    defer directory.close();
-    var collector: BatchCollector = .{};
-    defer collector.batches.deinit(std.testing.allocator);
-    try discover_batches(arena, directory, &collector);
-
-    var entry_count: usize = 0;
-    for (collector.batches.items, 0..) |batch, batch_index| {
-        try std.testing.expectEqual(batch_index, batch.batch_index);
-        try std.testing.expectEqualStrings(directory.path, batch.root_path);
-        entry_count += batch.projects.len;
-    }
-    try std.testing.expect(collector.batches.items.len >= 3);
-    try std.testing.expectEqual(@as(usize, BATCH_SIZE * 2 + 5), entry_count);
-}
-
-test "streaming discovery emits more than 1024 directories" {
-    const io = std.testing.io;
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    var tmp = std.testing.tmpDir(.{ .iterate = true });
-    defer tmp.cleanup();
-    var name_buffer: [32]u8 = undefined;
-    const project_count = 1025;
-    for (0..project_count) |project_index| {
-        const project_name = try std.fmt.bufPrint(&name_buffer, "project-{d:0>4}", .{project_index});
-        try tmp.dir.createDir(io, project_name, .default_dir);
-    }
-
-    const root_path = try test_root_path(arena, tmp.sub_path[0..]);
-    var directory = try Dir.open_absolute(arena, io, null, root_path);
-    defer directory.close();
-    var collector: BatchCollector = .{};
-    defer collector.batches.deinit(std.testing.allocator);
-    try discover_batches(arena, directory, &collector);
-
-    var emitted_count: usize = 0;
-    for (collector.batches.items) |batch| emitted_count += batch.projects.len;
-    try std.testing.expectEqual(@as(usize, project_count), emitted_count);
-}
-
-test "streaming discovery emits nothing for empty and file-only roots" {
-    const io = std.testing.io;
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    var tmp = std.testing.tmpDir(.{ .iterate = true });
-    defer tmp.cleanup();
-    const root_path = try test_root_path(arena, tmp.sub_path[0..]);
-
-    var collector: BatchCollector = .{};
-    defer collector.batches.deinit(std.testing.allocator);
-    var empty_directory = try Dir.open_absolute(arena, io, null, root_path);
-    try discover_batches(arena, empty_directory, &collector);
-    empty_directory.close();
-    try std.testing.expectEqual(@as(usize, 0), collector.batches.items.len);
-
-    try tmp.dir.writeFile(io, .{ .sub_path = "file.txt", .data = "not a project" });
-    var file_only_directory = try Dir.open_absolute(arena, io, null, root_path);
-    defer file_only_directory.close();
-    try discover_batches(arena, file_only_directory, &collector);
-    try std.testing.expectEqual(@as(usize, 0), collector.batches.items.len);
+    const target = directory.handle.statFile(directory.io, entry.name, .{}) catch return false;
+    return target.kind == .directory;
 }
 
 const BatchCollector = struct {
@@ -183,4 +81,106 @@ const BatchCollector = struct {
 
 fn test_root_path(arena: Allocator, sub_path: []const u8) ![]const u8 {
     return std.Io.Dir.path.join(arena, &.{ ".zig-cache", "tmp", sub_path });
+}
+
+test "discovery includes hidden directories and directory symlinks" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDir(io, ".hidden", .default_dir);
+    try tmp.dir.createDir(io, "target", .default_dir);
+    try tmp.dir.symLink(io, "target", "link", .{});
+    try tmp.dir.symLink(io, "missing", "broken", .{});
+    try tmp.dir.writeFile(io, .{ .sub_path = "file", .data = "x" });
+    try tmp.dir.symLink(io, "file", "file-link", .{});
+    if (@import("builtin").os.tag != .windows) {
+        try tmp.dir.createDir(io, &.{0xff}, .default_dir);
+    }
+
+    var restricted_target: ?std.Io.Dir = null;
+    if (@import("builtin").os.tag != .windows) {
+        restricted_target = try tmp.dir.openDir(io, "target", .{ .iterate = true });
+        try restricted_target.?.setPermissions(io, .fromMode(0));
+    }
+    defer if (restricted_target) |target| {
+        target.setPermissions(io, .fromMode(0o700)) catch {};
+        target.close(io);
+    };
+
+    const root = try test_root_path(arena, tmp.sub_path[0..]);
+    var directory = try Dir.open_absolute(arena, io, null, root);
+    defer directory.close();
+    var collector: BatchCollector = .{};
+    defer collector.batches.deinit(std.testing.allocator);
+    try discover_batches(arena, directory, &collector);
+
+    var found_hidden = false;
+    var found_link = false;
+    var found_broken = false;
+    var found_invalid = false;
+    var found_file_link = false;
+    for (collector.batches.items) |batch| {
+        for (batch.names) |name| {
+            found_hidden = found_hidden or std.mem.eql(u8, name, ".hidden");
+            found_link = found_link or std.mem.eql(u8, name, "link");
+            found_broken = found_broken or std.mem.eql(u8, name, "broken");
+            found_invalid = found_invalid or std.mem.eql(u8, name, &.{0xff});
+            found_file_link = found_file_link or std.mem.eql(u8, name, "file-link");
+        }
+    }
+    try std.testing.expect(found_hidden);
+    try std.testing.expect(found_link);
+    try std.testing.expect(!found_broken);
+    try std.testing.expect(!found_invalid);
+    try std.testing.expect(!found_file_link);
+}
+
+test "discovery streams several batches and has no project limit" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var buffer: [32]u8 = undefined;
+    for (0..1025) |index| {
+        const name = try std.fmt.bufPrint(&buffer, "project-{d:0>4}", .{index});
+        try tmp.dir.createDir(io, name, .default_dir);
+    }
+    const root = try test_root_path(arena, tmp.sub_path[0..]);
+
+    var expected: std.ArrayList([]const u8) = .empty;
+    var expected_directory = try Dir.open_absolute(arena, io, null, root);
+    var reader_buffer: [DIRECTORY_READER_BYTES]u8 align(@alignOf(usize)) = undefined;
+    var reader = std.Io.Dir.Reader.init(expected_directory.handle, &reader_buffer);
+    var raw_entries: [BATCH_SIZE]std.Io.Dir.Entry = undefined;
+    while (true) {
+        const count = try reader.read(io, &raw_entries);
+        if (count == 0) {
+            if (reader.state == .finished) break;
+            continue;
+        }
+        for (raw_entries[0..count]) |entry| {
+            try expected.append(arena, try arena.dupe(u8, entry.name));
+        }
+    }
+    expected_directory.close();
+
+    var directory = try Dir.open_absolute(arena, io, null, root);
+    defer directory.close();
+    var collector: BatchCollector = .{};
+    defer collector.batches.deinit(std.testing.allocator);
+    try discover_batches(arena, directory, &collector);
+    var count: usize = 0;
+    for (collector.batches.items) |batch| {
+        for (batch.names) |name| {
+            try std.testing.expectEqualStrings(expected.items[count], name);
+            count += 1;
+        }
+    }
+    try std.testing.expect(collector.batches.items.len > 1);
+    try std.testing.expectEqual(@as(usize, 1025), count);
 }

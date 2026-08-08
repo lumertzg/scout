@@ -4,6 +4,7 @@ const std = @import("std");
 const vaxis = @import("vaxis");
 
 const App = @import("App.zig");
+const Backend = @import("Backend.zig");
 const cli = @import("cli.zig");
 
 const STDIO_BUFFER_BYTES = 1024;
@@ -54,5 +55,6 @@ pub fn main(init: std.process.Init) !void {
 test {
     _ = vaxis;
     _ = App;
+    _ = Backend;
     _ = cli;
 }

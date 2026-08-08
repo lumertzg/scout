@@ -1,20 +1,14 @@
 # Scout
 
-Scout is a terminal project picker with fuzzy search. It lists projects from a
-directory and either prints the selected path or opens it with tmux or Kitty.
-Active tmux and Kitty sessions appear first and are marked in green. Git
-projects show their branch and status.
+Scout is a terminal project picker. It lists directories from a given path and
+uses fuzzy search to select one. The default path is `~/Projects`.
 
-## Requirements
-
-- Zig 0.16
-- libgit2 development headers and library (tested with 1.9.6)
-- `tmux` when Scout runs with `--backend=tmux`
-- Kitty 0.43 or newer and its `kitten` command when Scout runs with
-  `--backend=kitty`
-- A remote-control socket through `KITTY_LISTEN_ON` for the Kitty backend
+Scout can print the selected path or open it with tmux or Kitty. Active sessions
+are marked in green.
 
 ## Build
+
+Requires Zig 0.16.
 
 ```sh
 zig build -Doptimize=ReleaseFast
@@ -24,116 +18,48 @@ The binary is written to `zig-out/bin/scout`.
 
 ## Usage
 
-Scout searches `~/Projects` by default. Use `--path` with any backend to choose
-a different root:
-
 ```sh
-scout --path ~/projects
+scout [--path DIR] [--backend path|tmux|kitty]
 ```
 
-Set `SCOUT_BACKEND` to change the default backend. An explicit `--backend`
-argument takes precedence:
+The default path is `~/Projects`. The default backend is `path`.
+
+- `path` prints the selected directory.
+- `tmux` opens or switches to a tmux session.
+- `kitty` opens or switches to a Kitty session.
+
+Set the default backend with `SCOUT_BACKEND`:
 
 ```sh
-SCOUT_BACKEND=kitty scout
-SCOUT_BACKEND=kitty scout --backend=path
+SCOUT_BACKEND=tmux scout
 ```
 
-<details>
-<summary>Path backend</summary>
+## Kitty
 
+Requires Kitty 0.43 or newer and the `kitten` command.
 
-Print the selected project path without opening a terminal session. This is
-the default backend:
-
-```sh
-scout
-```
-
-You can also select it explicitly:
-
-```sh
-scout --backend=path
-```
-
-</details>
-
-<details>
-<summary>Tmux backend</summary>
-
-
-Open the selected project in a tmux session:
-
-```sh
-scout --backend=tmux
-```
-
-</details>
-
-<details>
-<summary>Kitty backend</summary>
-
-
-The Kitty backend uses Kitty's native remote-control commands to list active
-sessions and switch projects through Kitty's session action.
-
-The Kitty backend requires a remote-control socket. Configure one with
-`listen_on` and allow socket connections with `allow_remote_control`. The
-`socket-only` mode shown below avoids enabling remote control through the
-terminal. On Linux, prefer an abstract Unix socket:
+Linux:
 
 ```conf
 allow_remote_control socket-only
 listen_on unix:@scout
 ```
 
-On macOS and systems without abstract Unix sockets, use a filesystem-backed
-Unix socket:
+macOS:
 
 ```conf
 allow_remote_control socket-only
 listen_on unix:scout
 ```
 
-`listen_on` applies to all Kitty instances and can be overridden with Kitty's
-`--listen-on` command-line option. Kitty expands environment variables and
-resolves relative Unix socket paths from the temporary directory. Unless the
-address contains `{kitty_pid}`, Kitty appends its process ID to the address.
+Restart Kitty after changing its configuration.
 
-Restart Kitty after changing `listen_on`. Reloading the config does not apply
-the change. Kitty exports the resolved socket address as `KITTY_LISTEN_ON` to
-programs launched inside it, which is how Scout finds the socket.
-
-You can run Scout directly from a Kitty shell:
-
-```sh
-scout --backend=kitty
-```
-
-You can also launch Scout as an overlay:
+To open Scout in an overlay:
 
 ```conf
 map ctrl+b>f launch --type=overlay --cwd=current scout --backend=kitty
 ```
 
-Scout requires `KITTY_LISTEN_ON` for every Kitty operation. It reads active
-sessions in the background through that socket, so remote-control
-replies cannot conflict with picker input.
-
-Recommended Kitty configuration for showing the active session's tabs along
-with tabs that do not belong to a session:
-```conf
-tab_bar_filter session:~ or session:^$
-```
-
-</details>
-
-## Performance
-
-Scout streams directory batches into the picker, then enriches them with
-terminal session and Git metadata in the background. Filtering reuses its
-working storage.
-
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE)

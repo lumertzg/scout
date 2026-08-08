@@ -133,6 +133,7 @@ fn parse_backend(value: []const u8) ParseError!Backend {
 fn test_backend_environ(value: []const u8) !std.process.Environ.Map {
     var environ_map = std.process.Environ.Map.init(std.testing.allocator);
     errdefer environ_map.deinit();
+
     try environ_map.put("SCOUT_BACKEND", value);
     return environ_map;
 }
@@ -206,14 +207,24 @@ test "path option permits a directory beginning with a dash" {
 }
 
 test "rejects unknown options, positional arguments, and a missing path value" {
-    try std.testing.expectError(error.UnknownOption, parse(&.{ "scout", "--wat" }));
-    try std.testing.expectError(error.UnknownOption, parse(&.{ "scout", "--picker" }));
-    try std.testing.expectError(error.UnexpectedArgument, parse(&.{ "scout", "list" }));
-    try std.testing.expectError(error.UnexpectedArgument, parse(&.{ "scout", "one" }));
-    try std.testing.expectError(error.MissingPathValue, parse(&.{ "scout", "--path" }));
-    try std.testing.expectError(error.UnknownOption, parse(&.{ "scout", "--kitty" }));
-    try std.testing.expectError(error.UnknownOption, parse(&.{ "scout", "--no-tmux" }));
-    try std.testing.expectError(error.MissingBackendValue, parse(&.{ "scout", "--backend" }));
-    try std.testing.expectError(error.InvalidBackend, parse(&.{ "scout", "--backend=" }));
-    try std.testing.expectError(error.InvalidBackend, parse(&.{ "scout", "--backend=other" }));
+    const Case = struct {
+        expected: ParseError,
+        args: []const []const u8,
+    };
+    const cases = [_]Case{
+        .{ .expected = error.UnknownOption, .args = &.{ "scout", "--wat" } },
+        .{ .expected = error.UnknownOption, .args = &.{ "scout", "--picker" } },
+        .{ .expected = error.UnexpectedArgument, .args = &.{ "scout", "list" } },
+        .{ .expected = error.UnexpectedArgument, .args = &.{ "scout", "one" } },
+        .{ .expected = error.MissingPathValue, .args = &.{ "scout", "--path" } },
+        .{ .expected = error.UnknownOption, .args = &.{ "scout", "--kitty" } },
+        .{ .expected = error.UnknownOption, .args = &.{ "scout", "--no-tmux" } },
+        .{ .expected = error.MissingBackendValue, .args = &.{ "scout", "--backend" } },
+        .{ .expected = error.InvalidBackend, .args = &.{ "scout", "--backend=" } },
+        .{ .expected = error.InvalidBackend, .args = &.{ "scout", "--backend=other" } },
+    };
+
+    for (cases) |case| {
+        try std.testing.expectError(case.expected, parse(case.args));
+    }
 }
