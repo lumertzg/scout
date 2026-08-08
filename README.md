@@ -37,12 +37,14 @@ SCOUT_BACKEND=tmux scout
 ## Kitty
 
 Requires Kitty 0.43 or newer and the `kitten` command.
+The `tab_bar_filter session:~` setting is required for Scout's Kitty integration.
 
 Linux:
 
 ```conf
 allow_remote_control socket-only
 listen_on unix:@scout
+tab_bar_filter session:~
 ```
 
 macOS:
@@ -50,6 +52,7 @@ macOS:
 ```conf
 allow_remote_control socket-only
 listen_on unix:scout
+tab_bar_filter session:~
 ```
 
 Restart Kitty after changing its configuration.
