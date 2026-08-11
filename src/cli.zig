@@ -12,7 +12,7 @@ pub const usage =
     \\  -h, --help Show this help
     \\
     \\Environment:
-    \\  SCOUT_BACKEND Default backend; overridden by --backend
+    \\  SCOUT_BACKEND Default backend. overridden by --backend
     \\
 ;
 
