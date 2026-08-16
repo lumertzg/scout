@@ -545,7 +545,7 @@ test "sessions arriving before projects mark later batches immediately" {
     try std.testing.expect(!try set_test_sessions(
         &state,
         &.{"my_project"},
-        Tmux.session_name_buffered,
+        Tmux.session_name,
     ));
     try std.testing.expect(state.sessions_complete);
 

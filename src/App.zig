@@ -157,7 +157,7 @@ fn session_worker(context: *LoadContext, loop: *vaxis.Loop(Ui.Event)) void {
 
     loop.postEvent(.{ .sessions = .{
         .names = sessions,
-        .name_normalizer = if (context.source == .tmux) Tmux.session_name_buffered else null,
+        .name_normalizer = if (context.source == .tmux) Tmux.session_name else null,
     } }) catch {};
 }
 

@@ -5,8 +5,29 @@ const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 
 pub const SessionSet = std.StringHashMapUnmanaged(void);
+const NAME_BYTES_MAX = std.Io.Dir.max_name_bytes;
 const RESPONSE_BYTES_MAX = 1024 * 1024;
 const READER_BYTES = 4096;
+
+const SessionName = struct {
+    buffer: [NAME_BYTES_MAX + 1]u8,
+    len: usize,
+
+    fn init(path: []const u8) SessionName {
+        var result: SessionName = undefined;
+        result.len = write_session_name(session_base(path), result.buffer[1..]).len;
+        return result;
+    }
+
+    fn value(self: *const SessionName) []const u8 {
+        return self.buffer[1..][0..self.len];
+    }
+
+    fn exact_target(self: *SessionName) []const u8 {
+        self.buffer[0] = '=';
+        return self.buffer[0 .. self.len + 1];
+    }
+};
 
 pub fn list_sessions(arena: Allocator, io: std.Io) !SessionSet {
     var child = try std.process.spawn(io, .{
@@ -34,57 +55,46 @@ pub fn list_sessions(arena: Allocator, io: std.Io) !SessionSet {
 }
 
 pub fn replace_session(io: std.Io, project_path: []const u8) !void {
-    var name_buffer: [std.Io.Dir.max_name_bytes]u8 = undefined;
-
-    const name = session_name_buffered(project_path, &name_buffer);
-    const args = outside_args(name, project_path);
+    var name_buffer: [NAME_BYTES_MAX]u8 = undefined;
+    const name = session_name(project_path, &name_buffer);
+    const args = [_][]const u8{ "tmux", "new-session", "-A", "-s", name, "-c", project_path };
 
     return std.process.replace(io, .{ .argv = &args });
 }
 
 pub fn replace_switch(io: std.Io, project_path: []const u8) !void {
-    var name_buffer: [std.Io.Dir.max_name_bytes]u8 = undefined;
+    var name: SessionName = .init(project_path);
 
-    const name = session_name_buffered(project_path, &name_buffer);
-    const args = inside_args(name, project_path);
+    if (try session_exists(io, &name)) {
+        const args = [_][]const u8{ "tmux", "switch-client", "-t", name.value() };
+        return std.process.replace(io, .{ .argv = &args });
+    }
 
+    const args = [_][]const u8{ "tmux", "new-session", "-d", "-s", name.value(), "-c", project_path, ";", "switch-client", "-t", name.value() };
     return std.process.replace(io, .{ .argv = &args });
 }
 
-fn outside_args(name: []const u8, path: []const u8) [7][]const u8 {
-    return .{
-        "tmux",
-        "new-session",
-        "-A",
-        "-s",
-        name,
-        "-c",
-        path,
-    };
+fn session_exists(io: std.Io, name: *SessionName) !bool {
+    var child = try std.process.spawn(io, .{
+        .argv = &.{ "tmux", "has-session", "-t", name.exact_target() },
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    errdefer child.kill(io);
+
+    const term = try child.wait(io);
+    return term == .exited and term.exited == 0;
 }
 
-fn inside_args(name: []const u8, path: []const u8) [11][]const u8 {
-    return .{
-        "tmux",
-        "new-session",
-        "-Ad",
-        "-s",
-        name,
-        "-c",
-        path,
-        ";",
-        "switch-client",
-        "-t",
-        name,
-    };
-}
-
-pub fn session_name_buffered(path: []const u8, buffer: *[std.Io.Dir.max_name_bytes]u8) []const u8 {
+pub fn session_name(path: []const u8, buffer: *[NAME_BYTES_MAX]u8) []const u8 {
     const base = session_base(path);
 
     if (std.mem.indexOfScalar(u8, base, '.') == null) return base;
-    assert(base.len <= buffer.len);
+    return write_session_name(base, buffer);
+}
 
+fn write_session_name(base: []const u8, buffer: *[NAME_BYTES_MAX]u8) []const u8 {
+    assert(base.len <= buffer.len);
     @memcpy(buffer[0..base.len], base);
     std.mem.replaceScalar(u8, buffer[0..base.len], '.', '_');
 
@@ -109,25 +119,15 @@ fn parse_sessions(arena: Allocator, output: []const u8) !SessionSet {
 test "session normalization and parsing" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var buffer: [std.Io.Dir.max_name_bytes]u8 = undefined;
-    const unchanged = session_name_buffered("/tmp/scout/", &buffer);
+    var buffer: [NAME_BYTES_MAX]u8 = undefined;
+    const unchanged = session_name("/tmp/scout/", &buffer);
     try std.testing.expectEqualStrings("scout", unchanged);
-    try std.testing.expectEqualStrings("my_project", session_name_buffered("/tmp/my.project/", &buffer));
+    try std.testing.expectEqualStrings("my_project", session_name("/tmp/my.project/", &buffer));
     const sessions = try parse_sessions(arena.allocator(), "alpha\nbeta\n");
     try std.testing.expect(sessions.contains("alpha"));
     try std.testing.expect(sessions.contains("beta"));
-}
 
-test "handoff arguments use one tmux invocation" {
-    const outside = outside_args("my_project", "/projects/my.project");
-    const expected_outside = [_][]const u8{
-        "tmux", "new-session", "-A", "-s", "my_project", "-c", "/projects/my.project",
-    };
-    try std.testing.expectEqualSlices([]const u8, &expected_outside, &outside);
-
-    const inside = inside_args("name", "/p");
-    const expected_inside = [_][]const u8{
-        "tmux", "new-session", "-Ad", "-s", "name", "-c", "/p", ";", "switch-client", "-t", "name",
-    };
-    try std.testing.expectEqualSlices([]const u8, &expected_inside, &inside);
+    var name: SessionName = .init("/tmp/my.project/");
+    try std.testing.expectEqualStrings("my_project", name.value());
+    try std.testing.expectEqualStrings("=my_project", name.exact_target());
 }

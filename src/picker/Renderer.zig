@@ -9,6 +9,7 @@ const State = @import("State.zig").State;
 const Theme = @import("Theme.zig");
 
 const ACTIVE_MARKER = "• ";
+const NAME_BYTES_MAX = std.Io.Dir.max_name_bytes;
 const STATUS_BUFFER_BYTES = 64;
 
 /// Rendering history that does not belong to picker search state.
@@ -156,7 +157,7 @@ fn draw_item(view: State.RenderView, window: vaxis.Window, row: u16, match: Stat
         return;
     }
 
-    var positions_buffer: [std.Io.Dir.max_name_bytes]u16 = undefined;
+    var positions_buffer: [NAME_BYTES_MAX]u16 = undefined;
     const positions = Matcher.positions_folded(
         view.query,
         view.folded_query,
