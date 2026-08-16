@@ -12,7 +12,7 @@ path: []const u8,
 
 /// Resolves `source_path` absolutely and opens it for iteration.
 pub fn open_absolute(arena: Allocator, io: std.Io, home: ?[]const u8, source_path: []const u8) !Self {
-    const path = try format_path(arena, io, home, source_path);
+    const path = try resolve_absolute_path(arena, io, home, source_path);
     return .{
         .io = io,
         .handle = try std.Io.Dir.openDirAbsolute(io, path, .{ .iterate = true }),
@@ -25,8 +25,8 @@ pub fn close(self: *Self) void {
     self.* = undefined;
 }
 
-/// Appends the separator needed to concatenate a project name.
-fn format_path(arena: Allocator, io: std.Io, home: ?[]const u8, source_path: []const u8) ![]const u8 {
+/// Resolves a project root absolutely and appends its trailing separator.
+pub fn resolve_absolute_path(arena: Allocator, io: std.Io, home: ?[]const u8, source_path: []const u8) ![]const u8 {
     const expanded_path = try expand_home(arena, home, source_path);
 
     var absolute_path = expanded_path;

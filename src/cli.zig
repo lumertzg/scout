@@ -8,7 +8,7 @@ pub const usage =
     \\
     \\Options:
     \\  --path DIR Directory to search (default: ~/Projects)
-    \\  --backend NAME Backend to use: path, tmux, or kitty (default: path)
+    \\  --backend NAME Backend to use: path, tmux, kitty, or herdr (default: path)
     \\  -h, --help Show this help
     \\
     \\Environment:
@@ -43,8 +43,8 @@ pub const ParseError = error{
 pub fn error_message(err: ParseError) []const u8 {
     return switch (err) {
         error.MissingPathValue => "expected a directory after --path",
-        error.MissingBackendValue => "expected path, tmux, or kitty after --backend",
-        error.InvalidBackend => "backend must be path, tmux, or kitty",
+        error.MissingBackendValue => "expected path, tmux, kitty, or herdr after --backend",
+        error.InvalidBackend => "backend must be path, tmux, kitty, or herdr",
         error.UnexpectedArgument => "unexpected positional argument",
         error.UnknownOption => "unknown option",
     };
@@ -127,6 +127,7 @@ fn parse_backend(value: []const u8) ParseError!Backend {
     if (std.mem.eql(u8, value, "path")) return .path;
     if (std.mem.eql(u8, value, "tmux")) return .tmux;
     if (std.mem.eql(u8, value, "kitty")) return .kitty;
+    if (std.mem.eql(u8, value, "herdr")) return .herdr;
     return error.InvalidBackend;
 }
 
@@ -162,6 +163,9 @@ test "parses backend with separate and equals values" {
 
     const kitty = try parse(&.{ "scout", "--backend=kitty" });
     try std.testing.expectEqual(Backend.kitty, kitty.backend);
+
+    const herdr = try parse(&.{ "scout", "--backend=herdr" });
+    try std.testing.expectEqual(Backend.herdr, herdr.backend);
 }
 
 test "environment selects the backend when the CLI does not" {

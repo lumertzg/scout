@@ -7,6 +7,7 @@ const vaxis = @import("vaxis");
 
 const TerminalBackend = @import("Backend.zig").TerminalBackend;
 const Dir = @import("dir.zig");
+const Herdr = @import("Herdr.zig");
 const Kitty = @import("Kitty.zig");
 const Projects = @import("Projects.zig");
 const Tmux = @import("Tmux.zig");
@@ -22,6 +23,7 @@ const SessionSource = union(enum) {
     none,
     tmux,
     kitty: Kitty,
+    herdr: Herdr,
 };
 
 const LoadContext = struct {
@@ -66,6 +68,7 @@ pub fn open_project(self: Self, root_path: []const u8, backend: TerminalBackend)
     const source: SessionSource = switch (backend) {
         .tmux => .tmux,
         .kitty => .{ .kitty = try .init(self.arena, self.io, self.environ_map) },
+        .herdr => .{ .herdr = try .init(self.arena, self.io, self.environ_map) },
     };
 
     const selection = try self.pick(root_path, source) orelse return;
@@ -80,6 +83,7 @@ pub fn open_project(self: Self, root_path: []const u8, backend: TerminalBackend)
         else
             try Tmux.replace_session(self.io, project_path),
         .kitty => try source.kitty.replace_project(project_path),
+        .herdr => try source.herdr.open_project(project_path),
     }
 }
 
@@ -166,12 +170,14 @@ fn session_names(context: *LoadContext) !Ui.SessionSet {
         .none => .empty,
         .tmux => try Tmux.list_sessions(context.app.arena, context.app.io),
         .kitty => |kitty| try kitty.list_sessions(),
+        .herdr => |herdr| try herdr.list_sessions(context.root_path),
     };
 }
 
 test {
     _ = TerminalBackend;
     _ = Dir;
+    _ = Herdr;
     _ = Kitty;
     _ = Projects;
     _ = Tmux;
