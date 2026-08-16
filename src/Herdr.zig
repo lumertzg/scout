@@ -19,6 +19,10 @@ const REQUEST_TIMEOUT: std.Io.Timeout = .{ .duration = .{
     .raw = .fromMilliseconds(500),
     .clock = .awake,
 } };
+const SERVER_START_TIMEOUT_MS = 15_000;
+const SERVER_START_RETRY_DELAY_MS = 50;
+const SERVER_START_ATTEMPTS = SERVER_START_TIMEOUT_MS / SERVER_START_RETRY_DELAY_MS;
+const SERVER_START_RETRY_DELAY: std.Io.Duration = .fromMilliseconds(SERVER_START_RETRY_DELAY_MS);
 
 arena: Allocator,
 io: std.Io,
@@ -76,12 +80,17 @@ pub fn open_project(self: Self, project_path: []const u8) !void {
     self.open_running_project(project_path) catch |err| switch (err) {
         error.FileNotFound, error.Unexpected => {
             if (self.inside_herdr) return err;
-            return self.replace_with_herdr(project_path);
+            var launcher = try self.start_server_launcher(project_path);
+            errdefer launcher.kill(self.io);
+            try self.wait_for_server_and_open(project_path);
+            // Bare Herdr detaches the real server before attaching this temporary client.
+            launcher.kill(self.io);
+            return self.replace_with_herdr();
         },
         else => return err,
     };
 
-    if (!self.inside_herdr) return self.replace_with_herdr(project_path);
+    if (!self.inside_herdr) return self.replace_with_herdr();
 }
 
 fn open_running_project(self: Self, project_path: []const u8) !void {
@@ -105,8 +114,28 @@ fn open_running_project(self: Self, project_path: []const u8) !void {
     try expect_action(self.arena, response, "workspace_created");
 }
 
-fn replace_with_herdr(self: Self, project_path: []const u8) !void {
-    try std.process.setCurrentPath(self.io, project_path);
+fn start_server_launcher(self: Self, project_path: []const u8) !std.process.Child {
+    return std.process.spawn(self.io, .{
+        .argv = &.{"herdr"},
+        .cwd = .{ .path = project_path },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+}
+
+fn wait_for_server_and_open(self: Self, project_path: []const u8) !void {
+    for (0..SERVER_START_ATTEMPTS) |attempt| {
+        self.open_running_project(project_path) catch |err| {
+            if (attempt + 1 == SERVER_START_ATTEMPTS) return err;
+            try std.Io.sleep(self.io, SERVER_START_RETRY_DELAY, .awake);
+            continue;
+        };
+        return;
+    }
+}
+
+fn replace_with_herdr(self: Self) !void {
     return std.process.replace(self.io, .{ .argv = &.{"herdr"} });
 }
 
@@ -164,7 +193,7 @@ fn resolve_socket_path(arena: Allocator, environ_map: *const std.process.Environ
     else if (environ_map.get("HOME")) |home|
         try std.Io.Dir.path.join(arena, &.{ home, ".config" })
     else
-        return error.MissingHome;
+        environ_map.get("TMPDIR") orelse "/tmp";
 
     if (environ_map.get("HERDR_SESSION")) |session| {
         if (!std.mem.eql(u8, session, "default")) {
@@ -300,6 +329,25 @@ test "socket path rejects unsafe session names" {
     try std.testing.expectError(
         error.InvalidSessionName,
         resolve_socket_path(arena_state.allocator(), &environ_map),
+    );
+}
+
+test "socket path follows Herdr temporary fallback without home" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var environ_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map.deinit();
+
+    try std.testing.expectEqualStrings(
+        "/tmp/herdr/herdr.sock",
+        try resolve_socket_path(arena, &environ_map),
+    );
+
+    try environ_map.put("TMPDIR", "/var/tmp");
+    try std.testing.expectEqualStrings(
+        "/var/tmp/herdr/herdr.sock",
+        try resolve_socket_path(arena, &environ_map),
     );
 }
 
