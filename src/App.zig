@@ -29,7 +29,7 @@ const SessionSource = union(enum) {
 const LoadContext = struct {
     app: Self,
     root_path: []const u8,
-    source: SessionSource,
+    session_source: SessionSource,
 };
 
 const WorkerFutures = struct {
@@ -65,33 +65,34 @@ pub fn pick_path(self: Self, root_path: []const u8) !?[]const u8 {
 }
 
 pub fn open_project(self: Self, root_path: []const u8, backend: TerminalBackend) !void {
-    const source: SessionSource = switch (backend) {
+    const session_source: SessionSource = switch (backend) {
         .tmux => .tmux,
         .kitty => .{ .kitty = try .init(self.arena, self.io, self.environ_map) },
         .herdr => .{ .herdr = try .init(self.arena, self.io, self.environ_map) },
     };
 
-    const selection = try self.pick(root_path, source) orelse return;
+    const selection = try self.pick(root_path, session_source) orelse return;
     const project_path = try std.mem.concat(self.arena, u8, &.{
         selection.root_path,
         selection.project_name,
     });
 
-    switch (backend) {
+    switch (session_source) {
+        .none => unreachable,
         .tmux => if (self.inside_tmux)
             try Tmux.replace_switch(self.io, project_path)
         else
             try Tmux.replace_session(self.io, project_path),
-        .kitty => try source.kitty.replace_project(project_path),
-        .herdr => try source.herdr.open_project(project_path),
+        .kitty => |kitty| try kitty.replace_project(project_path),
+        .herdr => |herdr| try herdr.open_project(project_path),
     }
 }
 
-fn pick(self: Self, root_path: []const u8, source: SessionSource) !?Ui.Selection {
+fn pick(self: Self, root_path: []const u8, session_source: SessionSource) !?Ui.Selection {
     var context: LoadContext = .{
         .app = self,
         .root_path = root_path,
-        .source = source,
+        .session_source = session_source,
     };
 
     const picker: Ui = .init(self.arena, self.io, self.environ_map, .{
@@ -109,7 +110,7 @@ fn start_workers(context_ptr: *anyopaque, loop: *vaxis.Loop(Ui.Event)) !Ui.Worke
     var discovery = try context.app.io.concurrent(discovery_worker, .{ context, loop });
     errdefer discovery.cancel(context.app.io);
 
-    const sessions = switch (context.source) {
+    const sessions = switch (context.session_source) {
         .none => null,
         else => try context.app.io.concurrent(session_worker, .{ context, loop }),
     };
@@ -161,12 +162,12 @@ fn session_worker(context: *LoadContext, loop: *vaxis.Loop(Ui.Event)) void {
 
     loop.postEvent(.{ .sessions = .{
         .names = sessions,
-        .name_normalizer = if (context.source == .tmux) Tmux.session_name else null,
+        .name_normalizer = if (context.session_source == .tmux) Tmux.session_name else null,
     } }) catch {};
 }
 
 fn session_names(context: *LoadContext) !Ui.SessionSet {
-    return switch (context.source) {
+    return switch (context.session_source) {
         .none => .empty,
         .tmux => try Tmux.list_sessions(context.app.arena, context.app.io),
         .kitty => |kitty| try kitty.list_sessions(),

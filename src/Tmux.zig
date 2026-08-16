@@ -10,6 +10,8 @@ const RESPONSE_BYTES_MAX = 1024 * 1024;
 const READER_BYTES = 4096;
 
 const SessionName = struct {
+    // Reserve the first byte so an exact-target '=' prefix can be added
+    // without another buffer or allocation.
     buffer: [NAME_BYTES_MAX + 1]u8,
     len: usize,
 
@@ -86,6 +88,8 @@ fn session_exists(io: std.Io, name: *SessionName) !bool {
     return term == .exited and term.exited == 0;
 }
 
+/// Returns a normalized basename, borrowing `path` when no rewrite is needed
+/// and otherwise returning a slice of `buffer`.
 pub fn session_name(path: []const u8, buffer: *[NAME_BYTES_MAX]u8) []const u8 {
     const base = session_base(path);
 

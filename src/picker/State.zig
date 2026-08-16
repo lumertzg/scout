@@ -77,7 +77,8 @@ pub const State = struct {
     entries: std.ArrayList(Entry) = .empty,
     query: std.ArrayList(u8),
     folded_query: std.ArrayList(u8),
-    matches: std.ArrayList(RankedMatch) = .empty,
+    /// One slot per entry. Only items before `match_count` are initialized matches.
+    match_storage: std.ArrayList(RankedMatch) = .empty,
     partition_scratch: std.ArrayList(RankedMatch) = .empty,
     sessions: std.StringHashMapUnmanaged(void) = .empty,
     session_name_normalizer: ?NameNormalizer = null,
@@ -107,7 +108,7 @@ pub const State = struct {
         self.entries.deinit(allocator);
         self.query.deinit(allocator);
         self.folded_query.deinit(allocator);
-        self.matches.deinit(allocator);
+        self.match_storage.deinit(allocator);
         self.partition_scratch.deinit(allocator);
         self.sessions.deinit(allocator);
     }
@@ -127,7 +128,7 @@ pub const State = struct {
         // Grow every fallible buffer before changing any logical length.
         try self.entries.ensureUnusedCapacity(allocator, new_entry_count);
         try self.partition_scratch.ensureTotalCapacity(allocator, total_entry_count);
-        try self.matches.resize(allocator, total_entry_count);
+        try self.match_storage.resize(allocator, total_entry_count);
 
         for (batch.names) |name| {
             self.entries.appendAssumeCapacity(.{
@@ -136,7 +137,7 @@ pub const State = struct {
             });
 
             if (match_name(self, name, self.entries.items.len - 1)) |ranked| {
-                self.matches.items[self.match_count] = ranked;
+                self.match_storage.items[self.match_count] = ranked;
                 self.match_count += 1;
             }
         }
@@ -158,6 +159,8 @@ pub const State = struct {
         sessions: std.StringHashMapUnmanaged(void),
         normalizer: ?NameNormalizer,
     ) !bool {
+        assert(!self.sessions_complete);
+
         self.sessions = sessions;
         self.session_name_normalizer = normalizer;
 
@@ -280,9 +283,9 @@ pub const State = struct {
     fn narrow_matches(self: *State) void {
         var count: usize = 0;
 
-        for (self.matches.items[0..self.match_count]) |old| {
+        for (self.match_storage.items[0..self.match_count]) |old| {
             if (match_name(self, self.entries.items[old.entry_index].name, old.entry_index)) |ranked| {
-                self.matches.items[count] = ranked;
+                self.match_storage.items[count] = ranked;
                 count += 1;
             }
         }
@@ -297,7 +300,7 @@ pub const State = struct {
 
         for (self.entries.items, 0..) |entry, index| {
             if (match_name(self, entry.name, index)) |ranked| {
-                self.matches.items[self.match_count] = ranked;
+                self.match_storage.items[self.match_count] = ranked;
                 self.match_count += 1;
             }
         }
@@ -320,24 +323,24 @@ pub const State = struct {
         const selected_entry = self.selected_entry_index();
         self.partition_scratch.items.len = 0;
 
-        for (self.matches.items[0..self.match_count]) |match| {
+        for (self.match_storage.items[0..self.match_count]) |match| {
             if (self.entries.items[match.entry_index].session_active) {
                 self.partition_scratch.appendAssumeCapacity(match);
             }
         }
-        for (self.matches.items[0..self.match_count]) |match| {
+        for (self.match_storage.items[0..self.match_count]) |match| {
             if (!self.entries.items[match.entry_index].session_active) {
                 self.partition_scratch.appendAssumeCapacity(match);
             }
         }
 
-        @memcpy(self.matches.items[0..self.match_count], self.partition_scratch.items);
+        @memcpy(self.match_storage.items[0..self.match_count], self.partition_scratch.items);
         self.restore_selection(selected_entry);
     }
 
     fn sort_ranked(self: *State) void {
         const selected_entry = self.selected_entry_index();
-        std.mem.sortUnstable(RankedMatch, self.matches.items[0..self.match_count], {}, less_than);
+        std.mem.sortUnstable(RankedMatch, self.match_storage.items[0..self.match_count], {}, less_than);
         self.restore_selection(selected_entry);
     }
 
@@ -357,12 +360,12 @@ pub const State = struct {
     fn selected_entry_index(self: State) ?usize {
         if (!self.selection_moved or self.match_count == 0) return null;
         assert(self.selected_index < self.match_count);
-        return self.matches.items[self.selected_index].entry_index;
+        return self.match_storage.items[self.selected_index].entry_index;
     }
 
     fn restore_selection(self: *State, selected_entry: ?usize) void {
         if (selected_entry) |entry_index| {
-            for (self.matches.items[0..self.match_count], 0..) |match, index| {
+            for (self.match_storage.items[0..self.match_count], 0..) |match, index| {
                 if (match.entry_index == entry_index) {
                     self.selected_index = index;
                     return;
@@ -398,7 +401,7 @@ pub const State = struct {
     pub fn selected_item(self: State) ?[]const u8 {
         if (self.match_count == 0) return null;
         assert(self.selected_index < self.match_count);
-        return self.entries.items[self.matches.items[self.selected_index].entry_index].name;
+        return self.entries.items[self.match_storage.items[self.selected_index].entry_index].name;
     }
 
     /// Returns the complete selected project, if one exists.
@@ -414,11 +417,11 @@ pub const State = struct {
 
     /// Borrows the slices needed by the renderer for the current frame.
     pub fn render_view(self: State) RenderView {
-        assert(self.match_count <= self.matches.items.len);
+        assert(self.match_count <= self.match_storage.items.len);
 
         return .{
             .entries = self.entries.items,
-            .matches = self.matches.items[0..self.match_count],
+            .matches = self.match_storage.items[0..self.match_count],
             .query = self.query.items,
             .folded_query = self.folded_query.items,
             .selected_index = self.selected_index,
@@ -506,7 +509,7 @@ fn type_query(state: *State, text: []const u8) !void {
 fn expect_match_order(state: State, expected: []const []const u8) !void {
     try std.testing.expectEqual(expected.len, state.match_count);
 
-    for (expected, state.matches.items[0..state.match_count]) |name, match| {
+    for (expected, state.match_storage.items[0..state.match_count]) |name, match| {
         try std.testing.expectEqualStrings(name, state.entries.items[match.entry_index].name);
     }
 }
@@ -592,7 +595,7 @@ test "late sessions preserve an explicitly moved selection" {
     state.apply_pending_updates();
 
     try std.testing.expectEqualStrings("b", state.selected_item().?);
-    try std.testing.expectEqualStrings("c", state.entries.items[state.matches.items[0].entry_index].name);
+    try std.testing.expectEqualStrings("c", state.entries.items[state.match_storage.items[0].entry_index].name);
 }
 
 test "query shrink rebuilds matches excluded by query growth" {

@@ -38,7 +38,7 @@ pub fn draw(
 
     var list_first = layout.status_row;
     if (list_rows > 0) {
-        list_first = layout.list_row_end - @as(u16, @intCast(list_rows));
+        list_first = layout.list_row_count - @as(u16, @intCast(list_rows));
     }
     const first_drawn_row = @min(list_first, layout.status_row);
     const clear_row = @min(frame.first_drawn_row orelse first_drawn_row, first_drawn_row);
@@ -208,25 +208,26 @@ fn is_ascii(text: []const u8) bool {
 pub const Layout = struct {
     input_row: u16,
     status_row: u16,
-    list_row_end: u16,
+    list_row_count: u16,
 
     /// Computes a saturating layout for `height` terminal rows.
     pub fn init(height: u16) Layout {
         return .{
             .input_row = height -| 1,
             .status_row = height -| 2,
-            .list_row_end = height -| 3,
+            // Keep one blank row between the project list and status.
+            .list_row_count = height -| 3,
         };
     }
 
     pub fn visible_rows(self: Layout) usize {
-        return self.list_row_end;
+        return self.list_row_count;
     }
 
     pub fn item_row(self: Layout, visible_index: usize) u16 {
         assert(visible_index < self.visible_rows());
         // The list grows upward from the prompt so the selection stays near the
         // user's input on tall terminals.
-        return self.list_row_end - 1 - @as(u16, @intCast(visible_index));
+        return self.list_row_count - 1 - @as(u16, @intCast(visible_index));
     }
 };

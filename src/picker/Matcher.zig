@@ -5,6 +5,11 @@ const assert = std.debug.assert;
 
 const SCORE_MATCH = 16;
 const BONUS_CONSECUTIVE = 24;
+const BONUS_BOUNDARY_START = 32;
+const BONUS_PATH_SEPARATOR = 30;
+const BONUS_WHITESPACE = 26;
+const BONUS_DELIMITER = 20;
+const BONUS_CAMEL_CASE = 18;
 const GAP_PENALTY_MAX = 16;
 const LEADING_PENALTY_MAX = 16;
 
@@ -18,13 +23,13 @@ const BOUNDARY_BONUSES: [256]u8 = blk: {
 
     for (0..bonuses.len) |value| {
         const byte: u8 = @intCast(value);
-        if (std.ascii.isWhitespace(byte)) bonuses[value] = 26;
+        if (std.ascii.isWhitespace(byte)) bonuses[value] = BONUS_WHITESPACE;
     }
 
-    bonuses['/'] = 30;
-    bonuses['\\'] = 30;
+    bonuses['/'] = BONUS_PATH_SEPARATOR;
+    bonuses['\\'] = BONUS_PATH_SEPARATOR;
     for ([_]u8{ '_', '-', '.', ':', ';', ',', '|' }) |byte| {
-        bonuses[byte] = 20;
+        bonuses[byte] = BONUS_DELIMITER;
     }
 
     break :blk bonuses;
@@ -120,6 +125,8 @@ fn find_alignment(
     if (query.len == 0) return .{ .score = 0, .start = 0, .end = 0 };
     if (query.len > window_end - window_start) return null;
 
+    // Find the earliest complete match, then walk backward from its end to
+    // tighten the alignment before scoring it.
     const forward_end = find_forward_end(
         options.query_is_folded,
         match_query,
@@ -216,13 +223,13 @@ fn find_backward_start(
 }
 
 fn boundary_bonus(candidate: []const u8, index: usize) i32 {
-    if (index == 0) return 32;
+    if (index == 0) return BONUS_BOUNDARY_START;
 
     const previous = candidate[index - 1];
     const boundary_bonus_value = BOUNDARY_BONUSES[previous];
     if (boundary_bonus_value != 0) return boundary_bonus_value;
 
-    if (std.ascii.isLower(previous) and std.ascii.isUpper(candidate[index])) return 18;
+    if (std.ascii.isLower(previous) and std.ascii.isUpper(candidate[index])) return BONUS_CAMEL_CASE;
     return 0;
 }
 

@@ -27,36 +27,38 @@ pub fn discover_batches(arena: Allocator, directory: Dir, emit_context: anytype)
             continue;
         }
 
-        var accepted: [BATCH_SIZE][]const u8 = undefined;
-        var accepted_count: usize = 0;
-        var byte_count: usize = 0;
+        var project_names: [BATCH_SIZE][]const u8 = undefined;
+        var project_count: usize = 0;
+        var name_byte_count: usize = 0;
 
         for (entries[0..entry_count]) |entry| {
             if (!std.unicode.utf8ValidateSlice(entry.name)) continue;
             if (!is_project(directory, entry)) continue;
 
-            accepted[accepted_count] = entry.name;
-            accepted_count += 1;
+            project_names[project_count] = entry.name;
+            project_count += 1;
 
-            byte_count = try std.math.add(usize, byte_count, entry.name.len);
+            name_byte_count = try std.math.add(usize, name_byte_count, entry.name.len);
         }
 
-        if (accepted_count == 0) continue;
+        if (project_count == 0) continue;
 
-        const names = try arena.alloc([]const u8, accepted_count);
-        const bytes = try arena.alloc(u8, byte_count);
-        var offset: usize = 0;
+        // Reader entry names borrow its buffer, so preserve the batch before
+        // the next directory read reuses that storage.
+        const owned_names = try arena.alloc([]const u8, project_count);
+        const name_storage = try arena.alloc(u8, name_byte_count);
+        var storage_offset: usize = 0;
 
-        for (accepted[0..accepted_count], names) |name, *owned_name| {
-            @memcpy(bytes[offset..][0..name.len], name);
-            owned_name.* = bytes[offset..][0..name.len];
-            offset += name.len;
+        for (project_names[0..project_count], owned_names) |name, *owned_name| {
+            @memcpy(name_storage[storage_offset..][0..name.len], name);
+            owned_name.* = name_storage[storage_offset..][0..name.len];
+            storage_offset += name.len;
         }
 
         const batch = try arena.create(Batch);
         batch.* = .{
             .root_path = directory.path,
-            .names = names,
+            .names = owned_names,
         };
 
         try emit_context.emit_batch(batch);

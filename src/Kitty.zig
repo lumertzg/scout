@@ -249,6 +249,8 @@ fn connect_abstract_linux(address: std.Io.net.UnixAddress) !std.Io.net.Stream {
         }
     }
 
+    // Zig 0.16's Socket stores only an IP address. Stream I/O uses the handle,
+    // so this placeholder is unused for the connected Unix socket.
     return .{ .socket = .{
         .handle = socket,
         .address = .{ .ip4 = .loopback(0) },
