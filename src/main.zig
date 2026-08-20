@@ -43,7 +43,7 @@ pub fn main(init: std.process.Init) !void {
     switch (cli_result.backend) {
         .path => {
             const project_path = if (cli_result.query) |query|
-                try app.pick_path_query(cli_result.root_path, query)
+                try app.pick_path_query(cli_result.root_path, query) orelse return
             else
                 try app.pick_path(cli_result.root_path) orelse return;
             try stdout_writer.interface.writeAll(project_path);
