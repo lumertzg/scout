@@ -56,10 +56,7 @@ pub fn init(arena: Allocator, io: std.Io, environ_map: *std.process.Environ.Map)
 pub fn pick_path(self: Self, root_path: []const u8) !?[]const u8 {
     const selection = try self.pick(root_path, .none) orelse return null;
 
-    return try std.mem.concat(self.arena, u8, &.{
-        selection.root_path,
-        selection.project_name,
-    });
+    return self.selection_path(selection);
 }
 
 pub fn open_project(self: Self, root_path: []const u8, backend: TerminalBackend) !void {
@@ -69,10 +66,7 @@ pub fn open_project(self: Self, root_path: []const u8, backend: TerminalBackend)
     };
 
     const selection = try self.pick(root_path, session_source) orelse return;
-    const project_path = try std.mem.concat(self.arena, u8, &.{
-        selection.root_path,
-        selection.project_name,
-    });
+    const project_path = try self.selection_path(selection);
 
     switch (session_source) {
         .none => unreachable,
@@ -82,6 +76,13 @@ pub fn open_project(self: Self, root_path: []const u8, backend: TerminalBackend)
             try Tmux.replace_session(self.io, project_path),
         .herdr => |herdr| try herdr.open_project(project_path),
     }
+}
+
+fn selection_path(self: Self, selection: Ui.Selection) ![]const u8 {
+    return std.mem.concat(self.arena, u8, &.{
+        selection.root_path,
+        selection.project_name,
+    });
 }
 
 fn pick(self: Self, root_path: []const u8, session_source: SessionSource) !?Ui.Selection {
@@ -164,7 +165,7 @@ fn session_worker(context: *LoadContext, loop: *vaxis.Loop(Ui.Event)) void {
 
 fn session_names(context: *LoadContext) !Ui.SessionSet {
     return switch (context.session_source) {
-        .none => .empty,
+        .none => unreachable,
         .tmux => try Tmux.list_sessions(context.app.arena, context.app.io),
         .herdr => |herdr| try herdr.list_sessions(context.root_path),
     };

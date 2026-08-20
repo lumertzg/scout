@@ -72,7 +72,10 @@ pub fn replace_switch(io: std.Io, project_path: []const u8) !void {
         return std.process.replace(io, .{ .argv = &args });
     }
 
-    const args = [_][]const u8{ "tmux", "new-session", "-d", "-s", name.value(), "-c", project_path, ";", "switch-client", "-t", name.value() };
+    const args = [_][]const u8{
+        "tmux", "new-session",   "-d", "-s",         name.value(), "-c", project_path,
+        ";",    "switch-client", "-t", name.value(),
+    };
     return std.process.replace(io, .{ .argv = &args });
 }
 

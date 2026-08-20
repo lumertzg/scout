@@ -28,11 +28,13 @@ pub fn draw(
 
     const layout: Layout = .init(window.height);
 
-    state.sync_scroll(layout.visible_rows());
+    const visible_rows = layout.visible_rows();
+    state.sync_scroll(visible_rows);
     const view = state.render_view();
-    const visible_count = view.visible_matches(layout.visible_rows()).len;
+    const show_empty = visible_rows > 0 and view.matches.len == 0;
+    const visible_count = view.visible_matches(visible_rows).len;
     var list_rows = visible_count;
-    if (view.matches.len == 0 and layout.visible_rows() > 0) {
+    if (show_empty) {
         list_rows = 1;
     }
 
@@ -51,7 +53,7 @@ pub fn draw(
     }).fill(.{});
     frame.first_drawn_row = first_drawn_row;
 
-    if (view.matches.len == 0 and layout.visible_rows() > 0) {
+    if (show_empty) {
         draw_empty(view, window, layout.item_row(0));
     } else {
         draw_matches(view, window, layout);
@@ -205,13 +207,13 @@ fn is_ascii(text: []const u8) bool {
 }
 
 /// Terminal rows reserved for the prompt, status, and project list.
-pub const Layout = struct {
+const Layout = struct {
     input_row: u16,
     status_row: u16,
     list_row_count: u16,
 
     /// Computes a saturating layout for `height` terminal rows.
-    pub fn init(height: u16) Layout {
+    fn init(height: u16) Layout {
         return .{
             .input_row = height -| 1,
             .status_row = height -| 2,
@@ -220,11 +222,11 @@ pub const Layout = struct {
         };
     }
 
-    pub fn visible_rows(self: Layout) usize {
+    fn visible_rows(self: Layout) usize {
         return self.list_row_count;
     }
 
-    pub fn item_row(self: Layout, visible_index: usize) u16 {
+    fn item_row(self: Layout, visible_index: usize) u16 {
         assert(visible_index < self.visible_rows());
         // The list grows upward from the prompt so the selection stays near the
         // user's input on tall terminals.
