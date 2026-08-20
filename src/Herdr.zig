@@ -195,18 +195,17 @@ fn resolve_socket_path(arena: Allocator, environ_map: *const std.process.Environ
     else
         environ_map.get("TMPDIR") orelse "/tmp";
 
-    if (environ_map.get("HERDR_SESSION")) |session| {
-        if (!std.mem.eql(u8, session, "default")) {
-            if (!valid_session_name(session)) return error.InvalidSessionName;
+    const session = environ_map.get("HERDR_SESSION") orelse "default";
+    if (!std.mem.eql(u8, session, "default")) {
+        if (!valid_session_name(session)) return error.InvalidSessionName;
 
-            return std.Io.Dir.path.join(arena, &.{
-                config_root,
-                "herdr",
-                "sessions",
-                session,
-                "herdr.sock",
-            });
-        }
+        return std.Io.Dir.path.join(arena, &.{
+            config_root,
+            "herdr",
+            "sessions",
+            session,
+            "herdr.sock",
+        });
     }
 
     return std.Io.Dir.path.join(arena, &.{ config_root, "herdr", "herdr.sock" });
@@ -217,7 +216,8 @@ fn valid_session_name(name: []const u8) bool {
     if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return false;
 
     for (name) |byte| {
-        if (!std.ascii.isAlphanumeric(byte) and byte != '.' and byte != '_' and byte != '-') return false;
+        if (!std.ascii.isAlphanumeric(byte) and
+            byte != '.' and byte != '_' and byte != '-') return false;
     }
     return true;
 }
