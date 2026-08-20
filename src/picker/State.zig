@@ -185,6 +185,12 @@ pub const State = struct {
         self.discovery_complete = true;
     }
 
+    /// Seeds the picker with a query supplied on the command line.
+    pub fn set_query(self: *State, allocator: Allocator, query: []const u8) !void {
+        try self.append_query(allocator, query);
+        if (query.len > 0) self.pending_filter = .refresh;
+    }
+
     pub fn handle_key(self: *State, allocator: Allocator, key: vaxis.Key) !Action {
         const cancel = key.matches(vaxis.Key.escape, .{}) or
             key.matches('c', .{ .ctrl = true });
@@ -539,6 +545,22 @@ test "typed query ignores active state and coalesces filtering" {
     try std.testing.expect(state.entries.items[0].session_active);
     try std.testing.expectEqual(PendingFilter.none, state.pending_filter);
     try std.testing.expect(!state.ordering_pending);
+}
+
+test "command-line query is prefilled before discovery" {
+    var state = try State.init(std.testing.allocator);
+    defer state.deinit(std.testing.allocator);
+
+    try state.set_query(std.testing.allocator, "sc");
+    const batch: Projects.Batch = .{
+        .root_path = "/",
+        .names = &.{ "source", "scout", "other" },
+    };
+    _ = try state.append_batch(std.testing.allocator, &batch);
+    state.apply_pending_updates();
+
+    try std.testing.expectEqualStrings("sc", state.query.items);
+    try expect_match_order(state, &.{ "scout", "source" });
 }
 
 test "sessions arriving before projects mark later batches immediately" {

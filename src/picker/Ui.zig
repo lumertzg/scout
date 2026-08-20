@@ -111,12 +111,20 @@ pub fn init(allocator: Allocator, io: std.Io, environ_map: *std.process.Environ.
 }
 
 pub fn pick(self: Self) !?Selection {
+    return self.pick_with_query(null);
+}
+
+/// Runs the picker with an optional query already entered.
+pub fn pick_with_query(self: Self, initial_query: ?[]const u8) !?Selection {
     var runtime: Runtime = undefined;
     try runtime.init(self);
     defer runtime.deinit();
 
     var state = try State.init(self.allocator);
     defer state.deinit(self.allocator);
+
+    if (initial_query) |query| try state.set_query(self.allocator, query);
+
     var frame: Renderer.FrameState = .{};
     var screen_ready = false;
 

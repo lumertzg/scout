@@ -4,12 +4,15 @@ const std = @import("std");
 const Backend = @import("Backend.zig").Backend;
 
 pub const usage =
-    \\Usage: scout [options]
+    \\Usage: scout [QUERY] [options]
     \\
     \\Options:
     \\  --path DIR Directory to search (default: ~/Projects)
     \\  --backend NAME Backend to use: path, tmux, or herdr (default: path)
     \\  -h, --help Show this help
+    \\
+    \\An exact or unique fuzzy match selects directly. Otherwise, the picker
+    \\opens with the query entered.
     \\
     \\Environment:
     \\  SCOUT_BACKEND Default backend. overridden by --backend
@@ -26,6 +29,8 @@ pub const Command = enum {
 pub const Result = struct {
     /// Root whose direct children are offered as projects.
     root_path: []const u8 = "~/Projects",
+    /// Optional fuzzy query for non-interactive selection.
+    query: ?[]const u8 = null,
     command: Command = .run,
     backend: Backend = .path,
 };
@@ -113,7 +118,8 @@ fn parse_with_backend_default(args: []const []const u8, backend_env: ?[]const u8
             return error.UnknownOption;
         }
 
-        return error.UnexpectedArgument;
+        if (result.query != null) return error.UnexpectedArgument;
+        result.query = arg;
     }
 
     if (!backend_from_cli) {
@@ -143,7 +149,19 @@ test "defaults to the Projects directory" {
 
     try std.testing.expectEqual(.run, result.command);
     try std.testing.expectEqualStrings("~/Projects", result.root_path);
+    try std.testing.expect(result.query == null);
     try std.testing.expectEqual(Backend.path, result.backend);
+}
+
+test "parses a positional query with options in either order" {
+    const before = try parse(&.{ "scout", "scout", "--path", "/home/user/dev", "--backend=tmux" });
+    try std.testing.expectEqualStrings("scout", before.query.?);
+    try std.testing.expectEqualStrings("/home/user/dev", before.root_path);
+    try std.testing.expectEqual(Backend.tmux, before.backend);
+
+    const after = try parse(&.{ "scout", "--backend", "herdr", "scout" });
+    try std.testing.expectEqualStrings("scout", after.query.?);
+    try std.testing.expectEqual(Backend.herdr, after.backend);
 }
 
 test "parses a root path" {
@@ -214,8 +232,7 @@ test "rejects unknown options, positional arguments, and a missing path value" {
     const cases = [_]Case{
         .{ .expected = error.UnknownOption, .args = &.{ "scout", "--wat" } },
         .{ .expected = error.UnknownOption, .args = &.{ "scout", "--picker" } },
-        .{ .expected = error.UnexpectedArgument, .args = &.{ "scout", "list" } },
-        .{ .expected = error.UnexpectedArgument, .args = &.{ "scout", "one" } },
+        .{ .expected = error.UnexpectedArgument, .args = &.{ "scout", "one", "two" } },
         .{ .expected = error.MissingPathValue, .args = &.{ "scout", "--path" } },
         .{ .expected = error.UnknownOption, .args = &.{ "scout", "--no-tmux" } },
         .{ .expected = error.MissingBackendValue, .args = &.{ "scout", "--backend" } },
