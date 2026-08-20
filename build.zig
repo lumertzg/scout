@@ -45,6 +45,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe_tests.root_module.addImport("vaxis", vaxis.module("vaxis"));
+    test_step.dependOn(&exe.step);
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);
 
     const fmt_check = b.addFmt(.{ .paths = &.{ "src", "build.zig", "build.zig.zon" } });

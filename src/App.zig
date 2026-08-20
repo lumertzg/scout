@@ -57,7 +57,7 @@ const DirectCollector = struct {
                 continue;
             }
 
-            if (Matcher.rank(self.query, name) != null and self.fuzzy_match_count < 2) {
+            if (self.fuzzy_match_count < 2 and Matcher.matches(self.query, name)) {
                 self.fuzzy_match = self.fuzzy_match orelse name;
                 self.fuzzy_match_count += 1;
             }
@@ -90,7 +90,7 @@ pub fn init(arena: Allocator, io: std.Io, environ_map: *std.process.Environ.Map)
 pub fn pick_path(self: Self, root_path: []const u8) !?[]const u8 {
     const selection = try self.pick(root_path, .none, null) orelse return null;
 
-    return self.selection_path(selection);
+    return try self.selection_path(selection);
 }
 
 /// Selects a unique query match or opens the picker with the query entered.
