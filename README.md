@@ -19,10 +19,19 @@ The binary is written to `zig-out/bin/scout`.
 ## Usage
 
 ```sh
-scout [--path DIR] [--backend path|tmux|herdr]
+scout [QUERY] [--path DIR] [--backend path|tmux|herdr]
 ```
 
 The default path is `~/Projects`. The default backend is `path`.
+
+Pass a project name or fuzzy query to select it without opening the picker.
+An exact project name takes priority over other fuzzy matches. A unique fuzzy
+match also opens directly. Queries with no match or multiple matches open the
+picker with the query entered so it can be refined or selected.
+
+```sh
+scout scout --backend tmux
+```
 
 - `path` prints the selected directory.
 - `tmux` opens or switches to a tmux session.

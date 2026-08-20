@@ -42,13 +42,16 @@ pub fn main(init: std.process.Init) !void {
 
     switch (cli_result.backend) {
         .path => {
-            const project_path = try app.pick_path(cli_result.root_path) orelse return;
+            const project_path = if (cli_result.query) |query|
+                try app.pick_path_query(cli_result.root_path, query)
+            else
+                try app.pick_path(cli_result.root_path) orelse return;
             try stdout_writer.interface.writeAll(project_path);
             try stdout_writer.interface.writeByte('\n');
             try stdout_writer.interface.flush();
         },
-        .tmux => try app.open_project(cli_result.root_path, .tmux),
-        .herdr => try app.open_project(cli_result.root_path, .herdr),
+        .tmux => try app.open_project_query(cli_result.root_path, cli_result.query, .tmux),
+        .herdr => try app.open_project_query(cli_result.root_path, cli_result.query, .herdr),
     }
 }
 

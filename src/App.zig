@@ -8,6 +8,7 @@ const vaxis = @import("vaxis");
 const TerminalBackend = @import("Backend.zig").TerminalBackend;
 const Dir = @import("dir.zig");
 const Herdr = @import("Herdr.zig");
+const Matcher = @import("picker/Matcher.zig");
 const Projects = @import("Projects.zig");
 const Tmux = @import("Tmux.zig");
 const Ui = @import("picker/Ui.zig");
@@ -43,6 +44,39 @@ const EmitContext = struct {
     }
 };
 
+const DirectCollector = struct {
+    query: []const u8,
+    exact_match: ?[]const u8 = null,
+    fuzzy_match: ?[]const u8 = null,
+    fuzzy_match_count: u2 = 0,
+
+    pub fn emit_batch(self: *DirectCollector, batch: *const Projects.Batch) !void {
+        for (batch.names) |name| {
+            if (std.mem.eql(u8, self.query, name)) {
+                self.exact_match = name;
+                continue;
+            }
+
+            if (Matcher.rank(self.query, name) != null and self.fuzzy_match_count < 2) {
+                self.fuzzy_match = self.fuzzy_match orelse name;
+                self.fuzzy_match_count += 1;
+            }
+        }
+    }
+
+    fn result(self: DirectCollector) DirectSelectionError![]const u8 {
+        if (self.exact_match) |name| return name;
+        if (self.fuzzy_match_count == 0) return error.NoMatch;
+        if (self.fuzzy_match_count > 1) return error.AmbiguousMatch;
+        return self.fuzzy_match.?;
+    }
+};
+
+const DirectSelectionError = error{
+    NoMatch,
+    AmbiguousMatch,
+};
+
 pub fn init(arena: Allocator, io: std.Io, environ_map: *std.process.Environ.Map) Self {
     return .{
         .arena = arena,
@@ -54,19 +88,57 @@ pub fn init(arena: Allocator, io: std.Io, environ_map: *std.process.Environ.Map)
 }
 
 pub fn pick_path(self: Self, root_path: []const u8) !?[]const u8 {
-    const selection = try self.pick(root_path, .none) orelse return null;
+    const selection = try self.pick(root_path, .none, null) orelse return null;
 
     return self.selection_path(selection);
 }
 
+/// Selects a unique query match or opens the picker with the query entered.
+pub fn pick_path_query(self: Self, root_path: []const u8, query: []const u8) !?[]const u8 {
+    return self.path_for_query(root_path, query, .none);
+}
+
+fn direct_path(self: Self, root_path: []const u8, query: []const u8) ![]const u8 {
+    if (query.len == 0) return error.NoMatch;
+
+    var directory = try Dir.open_absolute(
+        self.arena,
+        self.io,
+        self.home,
+        root_path,
+    );
+    defer directory.close();
+
+    var collector: DirectCollector = .{ .query = query };
+    try Projects.discover_batches(self.arena, directory, &collector);
+
+    const project_name = try collector.result();
+
+    return std.mem.concat(self.arena, u8, &.{ directory.path, project_name });
+}
+
 pub fn open_project(self: Self, root_path: []const u8, backend: TerminalBackend) !void {
+    return self.open_project_query(root_path, null, backend);
+}
+
+/// Opens a unique positional-query match or uses the interactive picker.
+pub fn open_project_query(
+    self: Self,
+    root_path: []const u8,
+    query: ?[]const u8,
+    backend: TerminalBackend,
+) !void {
     const session_source: SessionSource = switch (backend) {
         .tmux => .tmux,
         .herdr => .{ .herdr = try .init(self.arena, self.io, self.environ_map) },
     };
 
-    const selection = try self.pick(root_path, session_source) orelse return;
-    const project_path = try self.selection_path(selection);
+    const project_path = if (query) |value|
+        (try self.path_for_query(root_path, value, session_source)) orelse return
+    else blk: {
+        const selection = try self.pick(root_path, session_source, null) orelse return;
+        break :blk try self.selection_path(selection);
+    };
 
     switch (session_source) {
         .none => unreachable,
@@ -85,7 +157,22 @@ fn selection_path(self: Self, selection: Ui.Selection) ![]const u8 {
     });
 }
 
-fn pick(self: Self, root_path: []const u8, session_source: SessionSource) !?Ui.Selection {
+fn path_for_query(self: Self, root_path: []const u8, query: []const u8, session_source: SessionSource) !?[]const u8 {
+    return self.direct_path(root_path, query) catch |err| switch (err) {
+        error.NoMatch, error.AmbiguousMatch => blk: {
+            const selection = try self.pick(root_path, session_source, query) orelse break :blk null;
+            break :blk try self.selection_path(selection);
+        },
+        else => return err,
+    };
+}
+
+fn pick(
+    self: Self,
+    root_path: []const u8,
+    session_source: SessionSource,
+    initial_query: ?[]const u8,
+) !?Ui.Selection {
     var context: LoadContext = .{
         .app = self,
         .root_path = root_path,
@@ -97,7 +184,7 @@ fn pick(self: Self, root_path: []const u8, session_source: SessionSource) !?Ui.S
         .start_loading = start_workers,
     });
 
-    return picker.pick();
+    return picker.pick_with_query(initial_query);
 }
 
 fn start_workers(context_ptr: *anyopaque, loop: *vaxis.Loop(Ui.Event)) !Ui.WorkerHandle {
@@ -169,6 +256,75 @@ fn session_names(context: *LoadContext) !Ui.SessionSet {
         .tmux => try Tmux.list_sessions(context.app.arena, context.app.io),
         .herdr => |herdr| try herdr.list_sessions(context.root_path),
     };
+}
+
+test "direct selection prefers an exact name over fuzzy matches" {
+    var collector: DirectCollector = .{ .query = "foo" };
+    const batch: Projects.Batch = .{
+        .root_path = "/projects/",
+        .names = &.{ "foo-bar", "foobar", "foo" },
+    };
+
+    try collector.emit_batch(&batch);
+    try std.testing.expectEqualStrings("foo", try collector.result());
+}
+
+test "direct selection accepts one fuzzy match" {
+    var collector: DirectCollector = .{ .query = "sct" };
+    const batch: Projects.Batch = .{
+        .root_path = "/projects/",
+        .names = &.{ "source-target", "other" },
+    };
+
+    try collector.emit_batch(&batch);
+    try std.testing.expectEqualStrings("source-target", try collector.result());
+}
+
+test "direct path returns the normalized path for a unique project" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDir(io, "scout", .default_dir);
+    try tmp.dir.createDir(io, "other", .default_dir);
+
+    const root = try std.Io.Dir.path.join(arena, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
+    var environ_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map.deinit();
+    const app: Self = .init(arena, io, &environ_map);
+
+    const actual = try app.direct_path(root, "scout");
+    const expected_root = try Dir.resolve_absolute_path(arena, io, null, root);
+    const expected = try std.mem.concat(arena, u8, &.{ expected_root, "scout" });
+    try std.testing.expectEqualStrings(expected, actual);
+}
+
+test "empty query skips direct selection" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+
+    var environ_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map.deinit();
+    const app: Self = .init(arena_state.allocator(), io, &environ_map);
+
+    try std.testing.expectError(error.NoMatch, app.direct_path("missing", ""));
+}
+
+test "direct selection rejects zero and multiple fuzzy matches" {
+    var no_match: DirectCollector = .{ .query = "missing" };
+    try no_match.emit_batch(&.{ .root_path = "/projects/", .names = &.{ "one", "two" } });
+    try std.testing.expectError(error.NoMatch, no_match.result());
+
+    var ambiguous: DirectCollector = .{ .query = "app" };
+    try ambiguous.emit_batch(&.{
+        .root_path = "/projects/",
+        .names = &.{ "apple", "application" },
+    });
+    try std.testing.expectError(error.AmbiguousMatch, ambiguous.result());
 }
 
 test {
