@@ -10,6 +10,7 @@ pub const usage =
     \\  --path DIR Directory to search (default: ~/Projects)
     \\  --backend NAME Backend to use: path, tmux, or herdr (default: path)
     \\  -h, --help Show this help
+    \\  -V, --version Show version
     \\
     \\An exact or unique fuzzy match selects directly. Otherwise, the picker
     \\opens with the query entered.
@@ -23,6 +24,7 @@ pub const usage =
 pub const Command = enum {
     run,
     help,
+    version,
 };
 
 /// Parsed command-line options.
@@ -85,6 +87,11 @@ fn parse_with_backend_default(args: []const []const u8, backend_env: ?[]const u8
 
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             result.command = .help;
+            return result;
+        }
+
+        if (std.mem.eql(u8, arg, "-V") or std.mem.eql(u8, arg, "--version")) {
+            result.command = .version;
             return result;
         }
 
@@ -205,17 +212,25 @@ test "rejects an invalid environment backend when no CLI override exists" {
     try std.testing.expectError(error.InvalidBackend, parse_with_env(&.{"scout"}, &environ_map));
 }
 
-test "help ignores an invalid environment backend" {
+test "informational commands ignore an invalid environment backend" {
     var environ_map = try test_backend_environ("invalid");
     defer environ_map.deinit();
 
-    const result = try parse_with_env(&.{ "scout", "--help" }, &environ_map);
-    try std.testing.expectEqual(Command.help, result.command);
+    const help = try parse_with_env(&.{ "scout", "--help" }, &environ_map);
+    try std.testing.expectEqual(Command.help, help.command);
+
+    const version = try parse_with_env(&.{ "scout", "--version" }, &environ_map);
+    try std.testing.expectEqual(Command.version, version.command);
 }
 
 test "parses help flags" {
     try std.testing.expectEqual(.help, (try parse(&.{ "scout", "-h" })).command);
     try std.testing.expectEqual(.help, (try parse(&.{ "scout", "--help" })).command);
+}
+
+test "parses version flags" {
+    try std.testing.expectEqual(.version, (try parse(&.{ "scout", "-V" })).command);
+    try std.testing.expectEqual(.version, (try parse(&.{ "scout", "--version" })).command);
 }
 
 test "path option permits a directory beginning with a dash" {

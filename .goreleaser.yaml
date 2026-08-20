@@ -1,0 +1,35 @@
+version: 2
+
+project_name: scout
+
+builds:
+  - id: scout
+    builder: zig
+    binary: scout
+    targets:
+      - x86_64-linux-gnu
+      - aarch64-linux-gnu
+      - aarch64-macos
+    flags:
+      - -Doptimize=ReleaseFast
+      - "-Dversion={{ .Version }}"
+
+archives:
+  - ids:
+      - scout
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^chore:"
+      - "^ci:"
+      - "^docs:"
+      - "^test:"

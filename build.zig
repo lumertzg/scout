@@ -1,10 +1,14 @@
 //! Scout build graph.
 
 const std = @import("std");
+const manifest = @import("build.zig.zon");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const version = b.option([]const u8, "version", "Version reported by scout") orelse manifest.version;
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", version);
     const vaxis = b.dependency("vaxis", .{
         .target = target,
         .optimize = optimize,
@@ -23,6 +27,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.root_module.addImport("vaxis", vaxis.module("vaxis"));
+    exe.root_module.addOptions("build_options", build_options);
 
     b.installArtifact(exe);
 
@@ -45,6 +50,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe_tests.root_module.addImport("vaxis", vaxis.module("vaxis"));
+    exe_tests.root_module.addOptions("build_options", build_options);
     test_step.dependOn(&exe.step);
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);
 
