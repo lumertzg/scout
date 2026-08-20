@@ -8,7 +8,6 @@ const vaxis = @import("vaxis");
 const TerminalBackend = @import("Backend.zig").TerminalBackend;
 const Dir = @import("dir.zig");
 const Herdr = @import("Herdr.zig");
-const Kitty = @import("Kitty.zig");
 const Projects = @import("Projects.zig");
 const Tmux = @import("Tmux.zig");
 const Ui = @import("picker/Ui.zig");
@@ -22,7 +21,6 @@ environ_map: *std.process.Environ.Map,
 const SessionSource = union(enum) {
     none,
     tmux,
-    kitty: Kitty,
     herdr: Herdr,
 };
 
@@ -67,7 +65,6 @@ pub fn pick_path(self: Self, root_path: []const u8) !?[]const u8 {
 pub fn open_project(self: Self, root_path: []const u8, backend: TerminalBackend) !void {
     const session_source: SessionSource = switch (backend) {
         .tmux => .tmux,
-        .kitty => .{ .kitty = try .init(self.arena, self.io, self.environ_map) },
         .herdr => .{ .herdr = try .init(self.arena, self.io, self.environ_map) },
     };
 
@@ -83,7 +80,6 @@ pub fn open_project(self: Self, root_path: []const u8, backend: TerminalBackend)
             try Tmux.replace_switch(self.io, project_path)
         else
             try Tmux.replace_session(self.io, project_path),
-        .kitty => |kitty| try kitty.replace_project(project_path),
         .herdr => |herdr| try herdr.open_project(project_path),
     }
 }
@@ -170,7 +166,6 @@ fn session_names(context: *LoadContext) !Ui.SessionSet {
     return switch (context.session_source) {
         .none => .empty,
         .tmux => try Tmux.list_sessions(context.app.arena, context.app.io),
-        .kitty => |kitty| try kitty.list_sessions(),
         .herdr => |herdr| try herdr.list_sessions(context.root_path),
     };
 }
@@ -179,7 +174,6 @@ test {
     _ = TerminalBackend;
     _ = Dir;
     _ = Herdr;
-    _ = Kitty;
     _ = Projects;
     _ = Tmux;
     _ = Ui;

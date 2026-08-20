@@ -8,7 +8,7 @@ pub const usage =
     \\
     \\Options:
     \\  --path DIR Directory to search (default: ~/Projects)
-    \\  --backend NAME Backend to use: path, tmux, kitty, or herdr (default: path)
+    \\  --backend NAME Backend to use: path, tmux, or herdr (default: path)
     \\  -h, --help Show this help
     \\
     \\Environment:
@@ -43,8 +43,8 @@ pub const ParseError = error{
 pub fn error_message(err: ParseError) []const u8 {
     return switch (err) {
         error.MissingPathValue => "expected a directory after --path",
-        error.MissingBackendValue => "expected path, tmux, kitty, or herdr after --backend",
-        error.InvalidBackend => "backend must be path, tmux, kitty, or herdr",
+        error.MissingBackendValue => "expected path, tmux, or herdr after --backend",
+        error.InvalidBackend => "backend must be path, tmux, or herdr",
         error.UnexpectedArgument => "unexpected positional argument",
         error.UnknownOption => "unknown option",
     };
@@ -126,7 +126,6 @@ fn parse_with_backend_default(args: []const []const u8, backend_env: ?[]const u8
 fn parse_backend(value: []const u8) ParseError!Backend {
     if (std.mem.eql(u8, value, "path")) return .path;
     if (std.mem.eql(u8, value, "tmux")) return .tmux;
-    if (std.mem.eql(u8, value, "kitty")) return .kitty;
     if (std.mem.eql(u8, value, "herdr")) return .herdr;
     return error.InvalidBackend;
 }
@@ -161,19 +160,16 @@ test "parses backend with separate and equals values" {
     const tmux = try parse(&.{ "scout", "--backend", "tmux" });
     try std.testing.expectEqual(Backend.tmux, tmux.backend);
 
-    const kitty = try parse(&.{ "scout", "--backend=kitty" });
-    try std.testing.expectEqual(Backend.kitty, kitty.backend);
-
     const herdr = try parse(&.{ "scout", "--backend=herdr" });
     try std.testing.expectEqual(Backend.herdr, herdr.backend);
 }
 
 test "environment selects the backend when the CLI does not" {
-    var environ_map = try test_backend_environ("kitty");
+    var environ_map = try test_backend_environ("herdr");
     defer environ_map.deinit();
 
     const result = try parse_with_env(&.{"scout"}, &environ_map);
-    try std.testing.expectEqual(Backend.kitty, result.backend);
+    try std.testing.expectEqual(Backend.herdr, result.backend);
 }
 
 test "CLI backend overrides the environment" {
@@ -221,7 +217,6 @@ test "rejects unknown options, positional arguments, and a missing path value" {
         .{ .expected = error.UnexpectedArgument, .args = &.{ "scout", "list" } },
         .{ .expected = error.UnexpectedArgument, .args = &.{ "scout", "one" } },
         .{ .expected = error.MissingPathValue, .args = &.{ "scout", "--path" } },
-        .{ .expected = error.UnknownOption, .args = &.{ "scout", "--kitty" } },
         .{ .expected = error.UnknownOption, .args = &.{ "scout", "--no-tmux" } },
         .{ .expected = error.MissingBackendValue, .args = &.{ "scout", "--backend" } },
         .{ .expected = error.InvalidBackend, .args = &.{ "scout", "--backend=" } },

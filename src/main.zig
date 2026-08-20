@@ -48,7 +48,6 @@ pub fn main(init: std.process.Init) !void {
             try stdout_writer.interface.flush();
         },
         .tmux => try app.open_project(cli_result.root_path, .tmux),
-        .kitty => try app.open_project(cli_result.root_path, .kitty),
         .herdr => try app.open_project(cli_result.root_path, .herdr),
     }
 }
