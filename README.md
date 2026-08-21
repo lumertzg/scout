@@ -6,15 +6,44 @@ uses fuzzy search to select one. The default path is `~/Projects`.
 Scout can print the selected path or open it with tmux or Herdr. Active
 sessions are marked in green.
 
-## Build
+## Install
 
-Requires Zig 0.16.
+Download the archive for your platform from the
+[latest release](https://github.com/lumertzg/scout/releases/latest), extract it,
+and place `scout` somewhere on `PATH`.
+
+To build from source, install Zig 0.16 and run:
 
 ```sh
 zig build -Doptimize=ReleaseFast
+mkdir -p ~/.local/bin
+install -m 755 zig-out/bin/scout ~/.local/bin/scout
 ```
 
-The binary is written to `zig-out/bin/scout`.
+## Shell integration
+
+The default `path` backend prints the selected project. Add a helper to your
+shell configuration to change directory after selection.
+
+Bash or Zsh:
+
+```sh
+sp() {
+  local project
+  project="$(scout "$@")" || return
+  [ -n "$project" ] && cd -- "$project"
+}
+```
+
+Fish:
+
+```fish
+function sp
+    set -l project (scout $argv)
+    or return
+    test -n "$project"; and cd -- "$project"
+end
+```
 
 ## Usage
 

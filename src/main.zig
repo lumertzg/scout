@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const vaxis = @import("vaxis");
+const build_options = @import("build_options");
 
 const App = @import("App.zig");
 const Backend = @import("Backend.zig");
@@ -36,6 +37,12 @@ pub fn main(init: std.process.Init) !void {
 
     if (cli_result.command == .help) {
         try stdout_writer.interface.writeAll(cli.usage);
+        try stdout_writer.interface.flush();
+        return;
+    }
+
+    if (cli_result.command == .version) {
+        try stdout_writer.interface.print("scout {s}\n", .{build_options.version});
         try stdout_writer.interface.flush();
         return;
     }

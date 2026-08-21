@@ -1,6 +1,6 @@
 .{
     .name = .scout,
-    .version = "0.0.0",
+    .version = "0.1.0",
     .fingerprint = 0x17688164e71fbb69,
     .dependencies = .{
         .vaxis = .{
