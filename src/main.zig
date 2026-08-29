@@ -29,9 +29,11 @@ pub fn main(init: std.process.Init) !void {
     var args = init.minimal.args.iterate();
     const config = Config.init(arena, init.environ_map, &args) catch |err| {
         if (err == error.OutOfMemory) return err;
-        const config_err: Config.ConfigErr = @errorCast(err);
+
+        const config_err: Config.Error = @errorCast(err);
         try help.print_error(&stderr_writer.interface, config_err);
         try stderr_writer.interface.flush();
+
         std.process.exit(2);
     };
 
