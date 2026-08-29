@@ -49,16 +49,21 @@ const ErrorBody = struct {
     message: []const u8,
 };
 
-pub fn init(arena: Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !Self {
+pub fn init(
+    arena: Allocator,
+    io: std.Io,
+    socket_path: []const u8,
+    inside_herdr: bool,
+    home: ?[]const u8,
+) !Self {
     if (builtin.os.tag == .windows) return error.UnsupportedPlatform;
-    const socket_path = try resolve_socket_path(arena, environ_map);
 
     return .{
         .arena = arena,
         .io = io,
         .address = try .init(socket_path),
-        .inside_herdr = std.mem.eql(u8, environ_map.get("HERDR_ENV") orelse "", "1"),
-        .home = environ_map.get("HOME"),
+        .inside_herdr = inside_herdr,
+        .home = home,
     };
 }
 
@@ -182,7 +187,8 @@ fn query(self: Self, method: []const u8, params: anytype) ![]const u8 {
     return response.toOwnedSlice(self.arena);
 }
 
-fn resolve_socket_path(arena: Allocator, environ_map: *const std.process.Environ.Map) ![]const u8 {
+/// Resolves the socket path selected by the Herdr environment.
+pub fn resolve_socket_path(arena: Allocator, environ_map: *const std.process.Environ.Map) ![]const u8 {
     if (environ_map.get("HERDR_SOCKET_PATH")) |path| {
         if (path.len == 0) return error.InvalidSocketPath;
         return path;

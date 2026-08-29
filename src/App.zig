@@ -5,7 +5,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const vaxis = @import("vaxis");
 
-const TerminalBackend = @import("Backend.zig").TerminalBackend;
+const Config = @import("Config.zig");
 const Dir = @import("dir.zig");
 const Herdr = @import("Herdr.zig");
 const Matcher = @import("picker/Matcher.zig");
@@ -16,7 +16,6 @@ const Ui = @import("picker/Ui.zig");
 arena: Allocator,
 io: std.Io,
 home: ?[]const u8,
-inside_tmux: bool,
 environ_map: *std.process.Environ.Map,
 
 const SessionSource = union(enum) {
@@ -77,12 +76,16 @@ const DirectSelectionError = error{
     AmbiguousMatch,
 };
 
-pub fn init(arena: Allocator, io: std.Io, environ_map: *std.process.Environ.Map) Self {
+pub fn init(
+    arena: Allocator,
+    io: std.Io,
+    home: ?[]const u8,
+    environ_map: *std.process.Environ.Map,
+) Self {
     return .{
         .arena = arena,
         .io = io,
-        .home = environ_map.get("HOME"),
-        .inside_tmux = environ_map.get("TMUX") != null,
+        .home = home,
         .environ_map = environ_map,
     };
 }
@@ -117,37 +120,48 @@ fn direct_path(self: Self, root_path: []const u8, query: []const u8) ![]const u8
     return std.mem.concat(self.arena, u8, &.{ directory.path, project_name });
 }
 
-pub fn open_project(self: Self, root_path: []const u8, backend: TerminalBackend) !void {
-    return self.open_project_query(root_path, null, backend);
-}
-
-/// Opens a unique positional-query match or uses the interactive picker.
-pub fn open_project_query(
+/// Opens a project through tmux after selecting it from the configured root.
+pub fn open_tmux_project_query(
     self: Self,
     root_path: []const u8,
     query: ?[]const u8,
-    backend: TerminalBackend,
+    tmux: Config.Mode.Tmux,
 ) !void {
-    const session_source: SessionSource = switch (backend) {
-        .tmux => .tmux,
-        .herdr => .{ .herdr = try .init(self.arena, self.io, self.environ_map) },
-    };
+    const project_path = try self.project_path_for_query(root_path, query, .tmux) orelse return;
 
+    if (tmux.inside) {
+        try Tmux.replace_switch(self.io, project_path);
+    } else {
+        try Tmux.replace_session(self.io, project_path);
+    }
+}
+
+/// Opens a project through Herdr after selecting it from the configured root.
+pub fn open_herdr_project_query(
+    self: Self,
+    root_path: []const u8,
+    query: ?[]const u8,
+    config: Config.Mode.Herdr,
+) !void {
+    const herdr = try Herdr.init(self.arena, self.io, config.socket_path, config.inside, self.home);
+    const project_path = try self.project_path_for_query(root_path, query, .{ .herdr = herdr }) orelse return;
+    try herdr.open_project(project_path);
+}
+
+fn project_path_for_query(
+    self: Self,
+    root_path: []const u8,
+    query: ?[]const u8,
+    session_source: SessionSource,
+) !?[]const u8 {
     const project_path = if (query) |value|
-        (try self.path_for_query(root_path, value, session_source)) orelse return
+        (try self.path_for_query(root_path, value, session_source)) orelse return null
     else blk: {
-        const selection = try self.pick(root_path, session_source, null) orelse return;
+        const selection = try self.pick(root_path, session_source, null) orelse return null;
         break :blk try self.selection_path(selection);
     };
 
-    switch (session_source) {
-        .none => unreachable,
-        .tmux => if (self.inside_tmux)
-            try Tmux.replace_switch(self.io, project_path)
-        else
-            try Tmux.replace_session(self.io, project_path),
-        .herdr => |herdr| try herdr.open_project(project_path),
-    }
+    return project_path;
 }
 
 fn selection_path(self: Self, selection: Ui.Selection) ![]const u8 {
@@ -294,7 +308,7 @@ test "direct path returns the normalized path for a unique project" {
     const root = try std.Io.Dir.path.join(arena, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
     var environ_map = std.process.Environ.Map.init(std.testing.allocator);
     defer environ_map.deinit();
-    const app: Self = .init(arena, io, &environ_map);
+    const app: Self = .init(arena, io, null, &environ_map);
 
     const actual = try app.direct_path(root, "scout");
     const expected_root = try Dir.resolve_absolute_path(arena, io, null, root);
@@ -309,7 +323,7 @@ test "empty query skips direct selection" {
 
     var environ_map = std.process.Environ.Map.init(std.testing.allocator);
     defer environ_map.deinit();
-    const app: Self = .init(arena_state.allocator(), io, &environ_map);
+    const app: Self = .init(arena_state.allocator(), io, null, &environ_map);
 
     try std.testing.expectError(error.NoMatch, app.direct_path("missing", ""));
 }
@@ -328,7 +342,7 @@ test "direct selection rejects zero and multiple fuzzy matches" {
 }
 
 test {
-    _ = TerminalBackend;
+    _ = Config;
     _ = Dir;
     _ = Herdr;
     _ = Projects;
