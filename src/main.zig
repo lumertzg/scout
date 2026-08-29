@@ -26,8 +26,8 @@ pub fn main(init: std.process.Init) !void {
     var stderr_writer = std.Io.File.stderr().writer(init.io, &stderr_buffer);
     var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
 
-    const args = try init.minimal.args.toSlice(arena);
-    const config = Config.init(arena, init.environ_map, args) catch |err| {
+    var args = init.minimal.args.iterate();
+    const config = Config.init(arena, init.environ_map, &args) catch |err| {
         if (err == error.OutOfMemory) return err;
         const config_err: Config.ConfigErr = @errorCast(err);
         try help.print_error(&stderr_writer.interface, config_err);
