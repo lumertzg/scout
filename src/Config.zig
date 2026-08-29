@@ -10,7 +10,7 @@ const EnvironMap = std.process.Environ.Map;
 const HerdrBackend = @import("Herdr.zig");
 
 /// Errors caused by invalid command-line arguments or environment settings.
-pub const ConfigErr = error{
+pub const Error = error{
     MissingPathValue,
     MissingBackendValue,
     InvalidBackend,
@@ -46,7 +46,7 @@ pub const Mode = union(enum) {
         socket_path: []const u8,
     };
 
-    fn tag_from_backend(value: []const u8) ConfigErr!std.meta.Tag(Mode) {
+    fn tag_from_backend(value: []const u8) Error!std.meta.Tag(Mode) {
         if (std.mem.eql(u8, value, "path")) return .path;
         if (std.mem.eql(u8, value, "tmux")) return .tmux;
         if (std.mem.eql(u8, value, "herdr")) return .herdr;
@@ -56,9 +56,9 @@ pub const Mode = union(enum) {
 
 const Arg = struct {
     long: []const u8,
-    missing_error: ConfigErr,
+    missing_error: Error,
 
-    fn parse(comptime self: Arg, source: []const u8, args: *ArgsIterator) ConfigErr!?[]const u8 {
+    fn parse(comptime self: Arg, source: []const u8, args: *ArgsIterator) Error!?[]const u8 {
         if (!std.mem.startsWith(u8, source, "--")) return null;
 
         const option = source[2..];
@@ -80,7 +80,7 @@ pub fn init(
     arena: Allocator,
     environ_map: *const EnvironMap,
     args: *ArgsIterator,
-) (ConfigErr || Allocator.Error)!Self {
+) (Error || Allocator.Error)!Self {
     const path_arg: Arg = .{
         .long = "path",
         .missing_error = error.MissingPathValue,
@@ -135,7 +135,7 @@ pub fn init(
     return self;
 }
 
-fn backend_from_env(environ_map: *const EnvironMap) ConfigErr!std.meta.Tag(Mode) {
+fn backend_from_env(environ_map: *const EnvironMap) Error!std.meta.Tag(Mode) {
     const value = environ_map.get("SCOUT_BACKEND") orelse return .path;
     return Mode.tag_from_backend(value);
 }
@@ -147,7 +147,7 @@ fn test_environ(backend: ?[]const u8) !EnvironMap {
     return environ_map;
 }
 
-fn test_init(environ_map: *const EnvironMap, args: std.process.Args.Vector) (ConfigErr || Allocator.Error)!Self {
+fn test_init(environ_map: *const EnvironMap, args: std.process.Args.Vector) (Error || Allocator.Error)!Self {
     const process_args: std.process.Args = .{ .vector = args };
     var iterator = process_args.iterate();
     return init(std.testing.allocator, environ_map, &iterator);
@@ -273,7 +273,7 @@ test "argument parsing rejects invalid values" {
     var environ_map = try test_environ(null);
     defer environ_map.deinit();
 
-    const Case = struct { expected: ConfigErr, args: std.process.Args.Vector };
+    const Case = struct { expected: Error, args: std.process.Args.Vector };
     const cases = [_]Case{
         .{ .expected = error.UnknownOption, .args = &.{ "scout", "--wat" } },
         .{ .expected = error.UnknownOption, .args = &.{ "scout", "--picker" } },
