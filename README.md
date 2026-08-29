@@ -49,6 +49,8 @@ end
 
 ```sh
 scout [QUERY] [--path DIR] [--backend path|tmux|herdr]
+scout {-h|--help}
+scout {-V|--version}
 ```
 
 The default path is `~/Projects`. The default backend is `path`.
@@ -66,10 +68,11 @@ scout scout --backend tmux
 - `tmux` opens or switches to a tmux session.
 - `herdr` opens or focuses a Herdr workspace and attaches to Herdr when needed.
 
-Set the default backend with `SCOUT_BACKEND`:
+Set the default project directory with `SCOUT_PATH` and the default backend
+with `SCOUT_BACKEND`:
 
 ```sh
-SCOUT_BACKEND=tmux scout
+SCOUT_PATH="$HOME/Code" SCOUT_BACKEND=tmux scout
 ```
 
 ## Herdr
