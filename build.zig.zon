@@ -7,6 +7,10 @@
             .url = "git+https://github.com/rockorager/libvaxis.git#cca454be4e002dbe1a386ff0fd3420ea21813fb5",
             .hash = "vaxis-0.6.0-BWNV_DYXCgBP-oydkwMvwclWtjMrMAmSmg7cO6wtYFno",
         },
+        .zlap = .{
+            .url = "git+https://github.com/lumertzg/zlap.git#b6f4ae912a94445662232e7bb04384099b39b036",
+            .hash = "zlap-0.1.0-GUiHWGT7AwApf2ciMSW2Pj2b4IciT57Mu4nzLlrf-6Z9",
+        },
     },
     .paths = .{
         "LICENSE",
