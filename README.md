@@ -48,12 +48,14 @@ end
 ## Usage
 
 ```sh
-scout [QUERY] [--path DIR] [--backend path|tmux|herdr]
-scout {-h|--help}
-scout {-V|--version}
+scout [QUERY] [OPTIONS]
+scout --help
+scout --version
 ```
 
 The default path is `~/Projects`. The default backend is `path`.
+`-h` and `-V` are short forms of the informational flags. Use `scout -- help`
+to select a project named `help`.
 
 Pass a project name or fuzzy query to select it without opening the picker.
 An exact project name takes priority over other fuzzy matches. A unique fuzzy

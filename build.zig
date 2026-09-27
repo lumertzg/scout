@@ -13,6 +13,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const zlap = b.dependency("zlap", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
     const exe = b.addExecutable(.{
         .name = "scout",
@@ -27,6 +31,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.root_module.addImport("vaxis", vaxis.module("vaxis"));
+    exe.root_module.addImport("zlap", zlap.module("zlap"));
     exe.root_module.addOptions("build_options", build_options);
 
     b.installArtifact(exe);
@@ -50,6 +55,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe_tests.root_module.addImport("vaxis", vaxis.module("vaxis"));
+    exe_tests.root_module.addImport("zlap", zlap.module("zlap"));
     exe_tests.root_module.addOptions("build_options", build_options);
     test_step.dependOn(&exe.step);
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);
