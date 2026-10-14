@@ -6,23 +6,24 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
 
-const Dir = @import("dir.zig");
+const Dir = @import("Dir.zig");
+const Matcher = @import("picker/Matcher.zig");
 
 pub const SessionSet = std.StringHashMapUnmanaged(void);
 
-const REQUEST_ID = "scout";
-const RESPONSE_BYTES_MAX = 1024 * 1024;
-const SOCKET_BUFFER_BYTES = 4096;
-const SESSION_NAME_BYTES_MAX = 64;
+const request_id = "scout";
+const response_bytes_max = 1024 * 1024;
+const socket_buffer_bytes = 4096;
+const session_name_bytes_max = 64;
 
-const REQUEST_TIMEOUT: std.Io.Timeout = .{ .duration = .{
+const request_timeout: std.Io.Timeout = .{ .duration = .{
     .raw = .fromMilliseconds(500),
     .clock = .awake,
 } };
-const SERVER_START_TIMEOUT_MS = 15_000;
-const SERVER_START_RETRY_DELAY_MS = 50;
-const SERVER_START_ATTEMPTS = SERVER_START_TIMEOUT_MS / SERVER_START_RETRY_DELAY_MS;
-const SERVER_START_RETRY_DELAY: std.Io.Duration = .fromMilliseconds(SERVER_START_RETRY_DELAY_MS);
+const server_start_timeout_ms = 15_000;
+const server_start_retry_delay_ms = 50;
+const server_start_attempts = server_start_timeout_ms / server_start_retry_delay_ms;
+const server_start_retry_delay: std.Io.Duration = .fromMilliseconds(server_start_retry_delay_ms);
 
 arena: Allocator,
 io: std.Io,
@@ -38,6 +39,19 @@ const Pane = struct {
 const PaneListResult = struct {
     type: []const u8,
     panes: []const Pane,
+};
+
+pub const Workspace = struct {
+    workspace_id: []const u8,
+    label: []const u8,
+    worktree: ?struct {
+        checkout_path: []const u8,
+    } = null,
+};
+
+const WorkspaceListResult = struct {
+    type: []const u8,
+    workspaces: []const Workspace,
 };
 
 const ResultHeader = struct {
@@ -67,48 +81,114 @@ pub fn init(
     };
 }
 
-pub fn list_sessions(self: Self, root_path: []const u8) !SessionSet {
-    const root = try Dir.resolve_absolute_path(self.arena, self.io, self.home, root_path);
-    const panes = try self.list_panes();
+pub fn listWorkspaces(self: Self) ![]const Workspace {
+    const response = try self.query("workspace.list", .{});
+    const result = try parseResponse(WorkspaceListResult, self.arena, response);
+    if (!std.mem.eql(u8, result.type, "workspace_list")) return error.InvalidResponse;
+    return result.workspaces;
+}
+
+pub fn focusWorkspace(self: Self, workspace_id: []const u8) !void {
+    try self.focusRunningWorkspace(workspace_id);
+    if (!self.inside_herdr) try self.replaceWithHerdr();
+}
+
+pub fn workspaceForQuery(workspaces: []const Workspace, query_text: []const u8) !?[]const u8 {
+    if (query_text.len == 0) return null;
+    var exact: ?[]const u8 = null;
+    var exact_count: usize = 0;
+    var fuzzy: ?[]const u8 = null;
+    var fuzzy_count: usize = 0;
+    for (workspaces) |workspace| {
+        if (std.mem.eql(u8, workspace.label, query_text)) {
+            exact = workspace.workspace_id;
+            exact_count += 1;
+        } else if (Matcher.matches(query_text, workspace.label)) {
+            fuzzy = workspace.workspace_id;
+            fuzzy_count += 1;
+        }
+    }
+    if (exact_count > 1) return error.AmbiguousMatch;
+    if (exact) |id| return id;
+    if (fuzzy_count > 1) return error.AmbiguousMatch;
+    return fuzzy;
+}
+
+pub fn listSessions(self: Self, root_path: []const u8) !SessionSet {
+    const root = try Dir.resolveAbsolutePath(self.arena, self.io, self.home, root_path);
+    const workspaces = try self.listWorkspaces();
+    const needs_panes = for (workspaces) |workspace| {
+        if (workspace.worktree == null) break true;
+    } else false;
+    const panes = if (needs_panes) try self.listPanes() else &.{};
     var sessions: SessionSet = .empty;
 
-    for (panes) |pane| {
-        const cwd = pane.cwd orelse continue;
-        const name = project_name_from_cwd(root, cwd) orelse continue;
-        try sessions.put(self.arena, name, {});
+    for (workspaces) |workspace| {
+        try sessions.put(self.arena, workspace.label, {});
+        if (workspace.worktree) |worktree| {
+            const name = projectNameFromCwd(root, worktree.checkout_path) orelse continue;
+            try sessions.put(self.arena, name, {});
+        } else {
+            for (panes) |pane| {
+                if (!std.mem.eql(u8, pane.workspace_id, workspace.workspace_id)) continue;
+                const cwd = pane.cwd orelse continue;
+                const name = projectNameFromCwd(root, cwd) orelse continue;
+                try sessions.put(self.arena, name, {});
+            }
+        }
     }
 
     return sessions;
 }
 
-pub fn open_project(self: Self, project_path: []const u8) !void {
-    self.open_running_project(project_path) catch |err| switch (err) {
+pub fn openProject(self: Self, project_path: []const u8) !void {
+    self.openRunningProject(project_path) catch |err| switch (err) {
         error.FileNotFound, error.Unexpected => {
             if (self.inside_herdr) return err;
-            var launcher = try self.start_server_launcher(project_path);
+            var launcher = try self.startServerLauncher(project_path);
             errdefer launcher.kill(self.io);
-            try self.wait_for_server_and_open(project_path);
+            try self.waitForServerAndOpen(project_path);
             // Bare Herdr detaches the real server before attaching this temporary client.
             launcher.kill(self.io);
-            return self.replace_with_herdr();
+            return self.replaceWithHerdr();
         },
         else => return err,
     };
 
-    if (!self.inside_herdr) return self.replace_with_herdr();
+    if (!self.inside_herdr) return self.replaceWithHerdr();
 }
 
-fn open_running_project(self: Self, project_path: []const u8) !void {
-    const name = project_name(project_path);
+fn focusRunningWorkspace(self: Self, workspace_id: []const u8) !void {
+    const response = try self.query("workspace.focus", .{ .workspace_id = workspace_id });
+    try expectAction(self.arena, response, "workspace_info");
+}
+
+fn openRunningProject(self: Self, project_path: []const u8) !void {
+    const name = projectName(project_path);
     if (name.len == 0) return error.InvalidProjectPath;
 
-    const panes = try self.list_panes();
-    if (workspace_for_project(panes, project_path)) |workspace_id| {
-        const response = try self.query("workspace.focus", .{
-            .workspace_id = workspace_id,
-        });
+    const workspaces = try self.listWorkspaces();
+    var matching_id: ?[]const u8 = null;
+    for (workspaces) |workspace| {
+        if (std.mem.eql(u8, workspace.label, name)) {
+            if (matching_id != null) return error.AmbiguousMatch;
+            matching_id = workspace.workspace_id;
+        }
+    }
+    if (matching_id) |id| return self.focusRunningWorkspace(id);
 
-        return expect_action(self.arena, response, "workspace_info");
+    for (workspaces) |workspace| {
+        const worktree = workspace.worktree orelse continue;
+        if (std.mem.eql(u8, trimPathEnd(worktree.checkout_path), trimPathEnd(project_path))) {
+            if (matching_id != null) return error.AmbiguousMatch;
+            matching_id = workspace.workspace_id;
+        }
+    }
+    if (matching_id) |id| return self.focusRunningWorkspace(id);
+
+    const panes = try self.listPanes();
+    if (try workspaceForProject(panes, project_path)) |workspace_id| {
+        return self.focusRunningWorkspace(workspace_id);
     }
 
     const response = try self.query("workspace.create", .{
@@ -116,10 +196,10 @@ fn open_running_project(self: Self, project_path: []const u8) !void {
         .label = name,
         .focus = true,
     });
-    try expect_action(self.arena, response, "workspace_created");
+    try expectAction(self.arena, response, "workspace_created");
 }
 
-fn start_server_launcher(self: Self, project_path: []const u8) !std.process.Child {
+fn startServerLauncher(self: Self, project_path: []const u8) !std.process.Child {
     return std.process.spawn(self.io, .{
         .argv = &.{"herdr"},
         .cwd = .{ .path = project_path },
@@ -129,31 +209,31 @@ fn start_server_launcher(self: Self, project_path: []const u8) !std.process.Chil
     });
 }
 
-fn wait_for_server_and_open(self: Self, project_path: []const u8) !void {
-    for (0..SERVER_START_ATTEMPTS) |attempt| {
-        self.open_running_project(project_path) catch |err| {
-            if (attempt + 1 == SERVER_START_ATTEMPTS) return err;
-            try std.Io.sleep(self.io, SERVER_START_RETRY_DELAY, .awake);
+fn waitForServerAndOpen(self: Self, project_path: []const u8) !void {
+    for (0..server_start_attempts) |attempt| {
+        self.openRunningProject(project_path) catch |err| {
+            if (attempt + 1 == server_start_attempts) return err;
+            try std.Io.sleep(self.io, server_start_retry_delay, .awake);
             continue;
         };
         return;
     }
 }
 
-fn replace_with_herdr(self: Self) !void {
+fn replaceWithHerdr(self: Self) !void {
     return std.process.replace(self.io, .{ .argv = &.{"herdr"} });
 }
 
-fn list_panes(self: Self) ![]const Pane {
+fn listPanes(self: Self) ![]const Pane {
     const response = try self.query("pane.list", .{});
-    return parse_pane_list(self.arena, response);
+    return parsePaneList(self.arena, response);
 }
 
 fn query(self: Self, method: []const u8, params: anytype) ![]const u8 {
     const stream = try self.address.connect(self.io);
     defer stream.close(self.io);
 
-    var write_buffer: [SOCKET_BUFFER_BYTES]u8 = undefined;
+    var write_buffer: [socket_buffer_bytes]u8 = undefined;
     var writer = stream.writer(self.io, &write_buffer);
     var json: std.json.Stringify = .{
         .writer = &writer.interface,
@@ -161,7 +241,7 @@ fn query(self: Self, method: []const u8, params: anytype) ![]const u8 {
     };
 
     try json.write(.{
-        .id = REQUEST_ID,
+        .id = request_id,
         .method = method,
         .params = params,
     });
@@ -171,14 +251,14 @@ fn query(self: Self, method: []const u8, params: anytype) ![]const u8 {
 
     var response: std.ArrayList(u8) = .empty;
     errdefer response.deinit(self.arena);
-    var read_buffer: [SOCKET_BUFFER_BYTES]u8 = undefined;
+    var read_buffer: [socket_buffer_bytes]u8 = undefined;
 
     while (true) {
-        const message = try stream.socket.receiveTimeout(self.io, &read_buffer, REQUEST_TIMEOUT);
+        const message = try stream.socket.receiveTimeout(self.io, &read_buffer, request_timeout);
         if (message.data.len == 0) return error.UnexpectedEndOfStream;
 
         const line_end = std.mem.indexOfScalar(u8, message.data, '\n') orelse message.data.len;
-        if (line_end > RESPONSE_BYTES_MAX - response.items.len) return error.ResponseTooLarge;
+        if (line_end > response_bytes_max - response.items.len) return error.ResponseTooLarge;
 
         try response.appendSlice(self.arena, message.data[0..line_end]);
         if (line_end < message.data.len) break;
@@ -188,7 +268,10 @@ fn query(self: Self, method: []const u8, params: anytype) ![]const u8 {
 }
 
 /// Resolves the socket path selected by the Herdr environment.
-pub fn resolve_socket_path(arena: Allocator, environ_map: *const std.process.Environ.Map) ![]const u8 {
+pub fn resolveSocketPath(
+    arena: Allocator,
+    environ_map: *const std.process.Environ.Map,
+) ![]const u8 {
     if (environ_map.get("HERDR_SOCKET_PATH")) |path| {
         if (path.len == 0) return error.InvalidSocketPath;
         return path;
@@ -203,7 +286,7 @@ pub fn resolve_socket_path(arena: Allocator, environ_map: *const std.process.Env
 
     const session = environ_map.get("HERDR_SESSION") orelse "default";
     if (!std.mem.eql(u8, session, "default")) {
-        if (!valid_session_name(session)) return error.InvalidSessionName;
+        if (!validSessionName(session)) return error.InvalidSessionName;
 
         return std.Io.Dir.path.join(arena, &.{
             config_root,
@@ -217,8 +300,8 @@ pub fn resolve_socket_path(arena: Allocator, environ_map: *const std.process.Env
     return std.Io.Dir.path.join(arena, &.{ config_root, "herdr", "herdr.sock" });
 }
 
-fn valid_session_name(name: []const u8) bool {
-    if (name.len == 0 or name.len > SESSION_NAME_BYTES_MAX) return false;
+fn validSessionName(name: []const u8) bool {
+    if (name.len == 0 or name.len > session_name_bytes_max) return false;
     if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return false;
 
     for (name) |byte| {
@@ -228,11 +311,11 @@ fn valid_session_name(name: []const u8) bool {
     return true;
 }
 
-fn project_name(path: []const u8) []const u8 {
+fn projectName(path: []const u8) []const u8 {
     return std.Io.Dir.path.basename(std.mem.trimEnd(u8, path, std.Io.Dir.path.sep_str));
 }
 
-fn project_name_from_cwd(root_path: []const u8, cwd: []const u8) ?[]const u8 {
+fn projectNameFromCwd(root_path: []const u8, cwd: []const u8) ?[]const u8 {
     if (!std.mem.startsWith(u8, cwd, root_path)) return null;
 
     const relative = cwd[root_path.len..];
@@ -244,43 +327,47 @@ fn project_name_from_cwd(root_path: []const u8, cwd: []const u8) ?[]const u8 {
     return relative[0..name_end];
 }
 
-fn workspace_for_project(panes: []const Pane, project_path: []const u8) ?[]const u8 {
-    const normalized_project_path = trim_path_end(project_path);
+fn workspaceForProject(panes: []const Pane, project_path: []const u8) !?[]const u8 {
+    const normalized_project_path = trimPathEnd(project_path);
+    var workspace_id: ?[]const u8 = null;
 
     for (panes) |pane| {
         const cwd = pane.cwd orelse continue;
 
-        if (path_is_within(trim_path_end(cwd), normalized_project_path)) {
-            return pane.workspace_id;
+        if (pathIsWithin(trimPathEnd(cwd), normalized_project_path)) {
+            if (workspace_id) |id| {
+                if (!std.mem.eql(u8, id, pane.workspace_id)) return error.AmbiguousMatch;
+            }
+            workspace_id = pane.workspace_id;
         }
     }
 
-    return null;
+    return workspace_id;
 }
 
-fn trim_path_end(path: []const u8) []const u8 {
+fn trimPathEnd(path: []const u8) []const u8 {
     return std.mem.trimEnd(u8, path, std.Io.Dir.path.sep_str);
 }
 
-fn path_is_within(path: []const u8, parent: []const u8) bool {
+fn pathIsWithin(path: []const u8, parent: []const u8) bool {
     if (std.mem.eql(u8, path, parent)) return true;
     if (!std.mem.startsWith(u8, path, parent) or path.len <= parent.len) return false;
     return std.Io.Dir.path.isSep(path[parent.len]);
 }
 
-fn parse_pane_list(arena: Allocator, response: []const u8) ![]const Pane {
-    const result = try parse_response(PaneListResult, arena, response);
+fn parsePaneList(arena: Allocator, response: []const u8) ![]const Pane {
+    const result = try parseResponse(PaneListResult, arena, response);
     if (!std.mem.eql(u8, result.type, "pane_list")) return error.InvalidResponse;
 
     return result.panes;
 }
 
-fn expect_action(arena: Allocator, response: []const u8, expected_type: []const u8) !void {
-    const result = try parse_response(ResultHeader, arena, response);
+fn expectAction(arena: Allocator, response: []const u8, expected_type: []const u8) !void {
+    const result = try parseResponse(ResultHeader, arena, response);
     if (!std.mem.eql(u8, result.type, expected_type)) return error.InvalidResponse;
 }
 
-fn parse_response(comptime Result: type, arena: Allocator, response: []const u8) !Result {
+fn parseResponse(comptime Result: type, arena: Allocator, response: []const u8) !Result {
     const Envelope = struct {
         id: []const u8,
         result: ?Result = null,
@@ -291,7 +378,7 @@ fn parse_response(comptime Result: type, arena: Allocator, response: []const u8)
         .ignore_unknown_fields = true,
     });
 
-    if (!std.mem.eql(u8, envelope.id, REQUEST_ID)) return error.InvalidResponse;
+    if (!std.mem.eql(u8, envelope.id, request_id)) return error.InvalidResponse;
     if (envelope.@"error" != null) return error.HerdrRequestFailed;
 
     return envelope.result orelse error.InvalidResponse;
@@ -307,20 +394,20 @@ test "socket path follows Herdr environment precedence" {
     try environ_map.put("HOME", "/home/user");
     try std.testing.expectEqualStrings(
         "/home/user/.config/herdr/herdr.sock",
-        try resolve_socket_path(arena, &environ_map),
+        try resolveSocketPath(arena, &environ_map),
     );
 
     try environ_map.put("XDG_CONFIG_HOME", "/config");
     try environ_map.put("HERDR_SESSION", "work");
     try std.testing.expectEqualStrings(
         "/config/herdr/sessions/work/herdr.sock",
-        try resolve_socket_path(arena, &environ_map),
+        try resolveSocketPath(arena, &environ_map),
     );
 
     try environ_map.put("HERDR_SOCKET_PATH", "/tmp/herdr.sock");
     try std.testing.expectEqualStrings(
         "/tmp/herdr.sock",
-        try resolve_socket_path(arena, &environ_map),
+        try resolveSocketPath(arena, &environ_map),
     );
 }
 
@@ -334,7 +421,7 @@ test "socket path rejects unsafe session names" {
 
     try std.testing.expectError(
         error.InvalidSessionName,
-        resolve_socket_path(arena_state.allocator(), &environ_map),
+        resolveSocketPath(arena_state.allocator(), &environ_map),
     );
 }
 
@@ -347,13 +434,13 @@ test "socket path follows Herdr temporary fallback without home" {
 
     try std.testing.expectEqualStrings(
         "/tmp/herdr/herdr.sock",
-        try resolve_socket_path(arena, &environ_map),
+        try resolveSocketPath(arena, &environ_map),
     );
 
     try environ_map.put("TMPDIR", "/var/tmp");
     try std.testing.expectEqualStrings(
         "/var/tmp/herdr/herdr.sock",
-        try resolve_socket_path(arena, &environ_map),
+        try resolveSocketPath(arena, &environ_map),
     );
 }
 
@@ -361,7 +448,7 @@ test "pane list response provides workspace paths" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
 
-    const panes = try parse_pane_list(arena_state.allocator(),
+    const panes = try parsePaneList(arena_state.allocator(),
         \\{"id":"scout","result":{"type":"pane_list","panes":[
         \\  {"pane_id":"w1:p1","workspace_id":"w1","cwd":"/home/user/scout","ignored":true},
         \\  {"pane_id":"w2:p1","workspace_id":"w2","cwd":"/home/user/zig"}
@@ -372,11 +459,11 @@ test "pane list response provides workspace paths" {
     try std.testing.expectEqualStrings("/home/user/scout", panes[0].cwd.?);
     try std.testing.expectEqualStrings(
         "w2",
-        workspace_for_project(panes, "/home/user/zig").?,
+        (try workspaceForProject(panes, "/home/user/zig")).?,
     );
     try std.testing.expectEqualStrings(
         "w1",
-        workspace_for_project(panes, "/home/user/scout/").?,
+        (try workspaceForProject(panes, "/home/user/scout/")).?,
     );
 }
 
@@ -386,20 +473,20 @@ test "project matching requires a path boundary" {
         .{ .workspace_id = "w2", .cwd = "/home/user/api/tests" },
     };
 
-    try std.testing.expectEqualStrings("w2", workspace_for_project(&panes, "/home/user/api").?);
-    try std.testing.expect(workspace_for_project(&panes, "/home/user/other") == null);
+    try std.testing.expectEqualStrings("w2", (try workspaceForProject(&panes, "/home/user/api")).?);
+    try std.testing.expect(try workspaceForProject(&panes, "/home/user/other") == null);
 }
 
 test "active project name comes from cwd under the configured root" {
     try std.testing.expectEqualStrings(
         "scout",
-        project_name_from_cwd("/home/user/Projects/", "/home/user/Projects/scout/src").?,
+        projectNameFromCwd("/home/user/Projects/", "/home/user/Projects/scout/src").?,
     );
-    try std.testing.expect(project_name_from_cwd(
+    try std.testing.expect(projectNameFromCwd(
         "/home/user/Projects/",
         "/home/user/Projects-other/scout",
     ) == null);
-    try std.testing.expect(project_name_from_cwd(
+    try std.testing.expect(projectNameFromCwd(
         "/home/user/Projects/",
         "/home/user/Projects/",
     ) == null);
@@ -410,12 +497,12 @@ test "action response validates result type and errors" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    try expect_action(arena,
+    try expectAction(arena,
         \\{"id":"scout","result":{"type":"workspace_info","workspace":{}}}
     , "workspace_info");
     try std.testing.expectError(
         error.HerdrRequestFailed,
-        expect_action(arena,
+        expectAction(arena,
             \\{"id":"scout","error":{"code":"not_found","message":"missing"}}
         , "workspace_info"),
     );

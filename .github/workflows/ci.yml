@@ -26,6 +26,9 @@ jobs:
       - name: Set up mise
         uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
 
+      - name: Run lint checks
+        run: mise run lint
+
       - name: Run tests and formatting checks
         run: mise run test
 

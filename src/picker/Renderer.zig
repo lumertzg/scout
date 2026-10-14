@@ -5,21 +5,21 @@ const assert = std.debug.assert;
 const vaxis = @import("vaxis");
 
 const Matcher = @import("Matcher.zig");
-const State = @import("State.zig").State;
+const Picker = @import("Picker.zig").Picker;
 const Theme = @import("Theme.zig");
 
-const ACTIVE_MARKER = "• ";
-const NAME_BYTES_MAX = std.Io.Dir.max_name_bytes;
-const STATUS_BUFFER_BYTES = 64;
+const active_marker = "• ";
+const name_bytes_max = std.Io.Dir.max_name_bytes;
+const status_buffer_bytes = 64;
 
 /// Rendering history that does not belong to picker search state.
-pub const FrameState = struct {
+pub const Frame = struct {
     first_drawn_row: ?u16 = null,
 };
 
 pub fn draw(
-    frame: *FrameState,
-    state: *State,
+    frame: *Frame,
+    state: *Picker,
     vx: *vaxis.Vaxis,
     tty: *std.Io.Writer,
 ) !void {
@@ -28,11 +28,11 @@ pub fn draw(
 
     const layout: Layout = .init(window.height);
 
-    const visible_rows = layout.visible_rows();
-    state.sync_scroll(visible_rows);
-    const view = state.render_view();
+    const visible_rows = layout.visibleRows();
+    state.syncScroll(visible_rows);
+    const view = state.renderView();
     const show_empty = visible_rows > 0 and view.matches.len == 0;
-    const visible_count = view.visible_matches(visible_rows).len;
+    const visible_count = view.visibleMatches(visible_rows).len;
     var list_rows = visible_count;
     if (show_empty) {
         list_rows = 1;
@@ -54,19 +54,19 @@ pub fn draw(
     frame.first_drawn_row = first_drawn_row;
 
     if (show_empty) {
-        draw_empty(view, window, layout.item_row(0));
+        drawEmpty(view, window, layout.itemRow(0));
     } else {
-        draw_matches(view, window, layout);
+        drawMatches(view, window, layout);
     }
 
-    var status_buffer: [STATUS_BUFFER_BYTES]u8 = undefined;
-    draw_status(view, window, layout.status_row, &status_buffer);
-    draw_input(view.query, window, layout.input_row);
+    var status_buffer: [status_buffer_bytes]u8 = undefined;
+    drawStatus(view, window, layout.status_row, &status_buffer);
+    drawInput(view.query, window, layout.input_row);
 
     try vx.render(tty);
 }
 
-fn draw_input(query: []const u8, window: vaxis.Window, row: u16) void {
+fn drawInput(query: []const u8, window: vaxis.Window, row: u16) void {
     const input = [_]vaxis.Segment{
         .{ .text = "> ", .style = Theme.accent },
         .{ .text = query },
@@ -90,14 +90,14 @@ fn draw_input(query: []const u8, window: vaxis.Window, row: u16) void {
     window.showCursor(@min(result.col, window.width - 1), row);
 }
 
-fn draw_status(
-    view: State.RenderView,
+fn drawStatus(
+    view: Picker.RenderView,
     window: vaxis.Window,
     row: u16,
     status_buffer: []u8,
 ) void {
     const pending = if (!view.discovery_complete) " discovering…" else "";
-    const status = std.fmt.bufPrint(
+    const status = std.mem.print(
         status_buffer,
         "{d}/{d}{s}",
         .{ view.matches.len, view.entries.len, pending },
@@ -114,7 +114,7 @@ fn draw_status(
     }
 }
 
-fn draw_empty(view: State.RenderView, window: vaxis.Window, row: u16) void {
+fn drawEmpty(view: Picker.RenderView, window: vaxis.Window, row: u16) void {
     const text = if (!view.discovery_complete and view.entries.len == 0)
         "  Loading projects…"
     else
@@ -125,15 +125,21 @@ fn draw_empty(view: State.RenderView, window: vaxis.Window, row: u16) void {
     }, .{ .row_offset = row, .col_offset = 0, .wrap = .none });
 }
 
-fn draw_matches(view: State.RenderView, window: vaxis.Window, layout: Layout) void {
-    for (view.visible_matches(layout.visible_rows()), 0..) |match, visible_index| {
+fn drawMatches(view: Picker.RenderView, window: vaxis.Window, layout: Layout) void {
+    for (view.visibleMatches(layout.visibleRows()), 0..) |match, visible_index| {
         const match_index = view.first_visible_index + visible_index;
         const is_selected = match_index == view.selected_index;
-        draw_item(view, window, layout.item_row(visible_index), match, is_selected);
+        drawItem(view, window, layout.itemRow(visible_index), match, is_selected);
     }
 }
 
-fn draw_item(view: State.RenderView, window: vaxis.Window, row: u16, match: State.RankedMatch, is_selected: bool) void {
+fn drawItem(
+    view: Picker.RenderView,
+    window: vaxis.Window,
+    row: u16,
+    match: Picker.RankedMatch,
+    is_selected: bool,
+) void {
     const entry = view.entry(match);
     const base_style = if (is_selected) Theme.selected else vaxis.Style{};
     const matched_style = if (is_selected) Theme.selected_match else Theme.matched;
@@ -150,17 +156,23 @@ fn draw_item(view: State.RenderView, window: vaxis.Window, row: u16, match: Stat
     }).col;
 
     const active = entry.session_active;
-    const marker_style = if (!active) base_style else if (is_selected) Theme.active_selected else Theme.active;
+    const marker_style = if (!active)
+        base_style
+    else if (is_selected)
+        Theme.active_selected
+    else
+        Theme.active;
 
-    column = print_text(window, row, column, if (active) ACTIVE_MARKER else "  ", marker_style);
+    column = printText(window, row, column, if (active) active_marker else "  ", marker_style);
+    column = printWorkspaceIdentity(view, entry, window, row, column, base_style);
 
-    if (view.query.len == 0 or !is_ascii(view.query)) {
-        _ = print_text(window, row, column, entry.name, base_style);
+    if (view.query.len == 0 or view.query.len > name_bytes_max or !isAscii(view.query)) {
+        column = printText(window, row, column, entry.name, base_style);
         return;
     }
 
-    var positions_buffer: [NAME_BYTES_MAX]u16 = undefined;
-    const positions = Matcher.positions_folded(
+    var positions_buffer: [name_bytes_max]usize = undefined;
+    const positions = Matcher.positionsFolded(
         view.query,
         view.folded_query,
         entry.name,
@@ -172,23 +184,52 @@ fn draw_item(view: State.RenderView, window: vaxis.Window, row: u16, match: Stat
 
     while (position_index < positions.len) {
         const match_start: usize = positions[position_index];
-        column = print_text(window, row, column, entry.name[text_index..match_start], base_style);
+        column = printText(window, row, column, entry.name[text_index..match_start], base_style);
 
         var match_end = match_start + 1;
         position_index += 1;
-        while (position_index < positions.len and @as(usize, positions[position_index]) == match_end) {
+        while (position_index < positions.len and
+            positions[position_index] == match_end)
+        {
             match_end += 1;
             position_index += 1;
         }
 
-        column = print_text(window, row, column, entry.name[match_start..match_end], matched_style);
+        column = printText(window, row, column, entry.name[match_start..match_end], matched_style);
         text_index = match_end;
     }
 
-    _ = print_text(window, row, column, entry.name[text_index..], base_style);
+    column = printText(window, row, column, entry.name[text_index..], base_style);
 }
 
-fn print_text(window: vaxis.Window, row: u16, column: u16, text: []const u8, style: vaxis.Style) u16 {
+fn printWorkspaceIdentity(
+    view: Picker.RenderView,
+    entry: Picker.Entry,
+    window: vaxis.Window,
+    row: u16,
+    column: u16,
+    style: vaxis.Style,
+) u16 {
+    const id = entry.workspace_id orelse return column;
+    const duplicate = for (view.entries) |other| {
+        const other_id = other.workspace_id orelse continue;
+        if (!std.mem.eql(u8, id, other_id) and std.mem.eql(u8, entry.name, other.name)) {
+            break true;
+        }
+    } else false;
+    if (!duplicate) return column;
+    var next_column = printText(window, row, column, "[", style);
+    next_column = printText(window, row, next_column, id, style);
+    return printText(window, row, next_column, "] ", style);
+}
+
+fn printText(
+    window: vaxis.Window,
+    row: u16,
+    column: u16,
+    text: []const u8,
+    style: vaxis.Style,
+) u16 {
     if (text.len == 0) return column;
 
     return window.print(&.{.{ .text = text, .style = style }}, .{
@@ -198,7 +239,7 @@ fn print_text(window: vaxis.Window, row: u16, column: u16, text: []const u8, sty
     }).col;
 }
 
-fn is_ascii(text: []const u8) bool {
+fn isAscii(text: []const u8) bool {
     for (text) |byte| {
         if (byte >= 0x80) return false;
     }
@@ -222,12 +263,12 @@ const Layout = struct {
         };
     }
 
-    fn visible_rows(self: Layout) usize {
+    fn visibleRows(self: Layout) usize {
         return self.list_row_count;
     }
 
-    fn item_row(self: Layout, visible_index: usize) u16 {
-        assert(visible_index < self.visible_rows());
+    fn itemRow(self: Layout, visible_index: usize) u16 {
+        assert(visible_index < self.visibleRows());
         // The list grows upward from the prompt so the selection stays near the
         // user's input on tall terminals.
         return self.list_row_count - 1 - @as(u16, @intCast(visible_index));

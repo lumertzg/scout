@@ -1,5 +1,9 @@
 [tools]
-zig = "0.16.0"
+"github:rockorager/ziglint" = "0.6.1"
+zig = "0.17.0"
+
+[tasks.lint]
+run = "ziglint"
 
 [tasks.test]
 run = "zig build test"

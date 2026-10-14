@@ -11,8 +11,13 @@ handle: std.Io.Dir,
 path: []const u8,
 
 /// Resolves `source_path` absolutely and opens it for iteration.
-pub fn open_absolute(arena: Allocator, io: std.Io, home: ?[]const u8, source_path: []const u8) !Self {
-    const path = try resolve_absolute_path(arena, io, home, source_path);
+pub fn openAbsolute(
+    arena: Allocator,
+    io: std.Io,
+    home: ?[]const u8,
+    source_path: []const u8,
+) !Self {
+    const path = try resolveAbsolutePath(arena, io, home, source_path);
     return .{
         .io = io,
         .handle = try std.Io.Dir.openDirAbsolute(io, path, .{ .iterate = true }),
@@ -26,8 +31,13 @@ pub fn close(self: *Self) void {
 }
 
 /// Resolves a project root absolutely and appends its trailing separator.
-pub fn resolve_absolute_path(arena: Allocator, io: std.Io, home: ?[]const u8, source_path: []const u8) ![]const u8 {
-    const expanded_path = try expand_home(arena, home, source_path);
+pub fn resolveAbsolutePath(
+    arena: Allocator,
+    io: std.Io,
+    home: ?[]const u8,
+    source_path: []const u8,
+) ![]const u8 {
+    const expanded_path = try expandHome(arena, home, source_path);
 
     var absolute_path = expanded_path;
     if (!std.Io.Dir.path.isAbsolute(expanded_path)) {
@@ -42,13 +52,14 @@ pub fn resolve_absolute_path(arena: Allocator, io: std.Io, home: ?[]const u8, so
     return std.mem.concat(arena, u8, &.{ absolute_path, std.Io.Dir.path.sep_str });
 }
 
-fn expand_home(arena: Allocator, home: ?[]const u8, source_path: []const u8) ![]const u8 {
+fn expandHome(arena: Allocator, home: ?[]const u8, source_path: []const u8) ![]const u8 {
     if (std.mem.eql(u8, source_path, "~")) {
         return home orelse error.HomeNotSet;
     }
 
     if (source_path.len > 1 and source_path[0] == '~' and std.Io.Dir.path.isSep(source_path[1])) {
-        return std.Io.Dir.path.join(arena, &.{ home orelse return error.HomeNotSet, source_path[2..] });
+        const home_path = home orelse return error.HomeNotSet;
+        return std.Io.Dir.path.join(arena, &.{ home_path, source_path[2..] });
     }
 
     return source_path;
@@ -69,7 +80,7 @@ test "opens a home-relative path absolutely" {
     const cwd = try std.process.currentPathAlloc(std.testing.io, arena);
     const home = try std.Io.Dir.path.resolve(arena, &.{ cwd, relative_path });
 
-    var directory = try open_absolute(arena, std.testing.io, home, "~");
+    var directory = try openAbsolute(arena, std.testing.io, home, "~");
     defer directory.close();
 
     try std.testing.expect(std.Io.Dir.path.isAbsolute(directory.path));
@@ -77,6 +88,7 @@ test "opens a home-relative path absolutely" {
 }
 
 test "requires HOME only for tilde expansion" {
-    try std.testing.expectError(error.HomeNotSet, expand_home(std.testing.allocator, null, "~/Projects"));
-    try std.testing.expectEqualStrings("/tmp/dev", try expand_home(std.testing.allocator, null, "/tmp/dev"));
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(error.HomeNotSet, expandHome(allocator, null, "~/Projects"));
+    try std.testing.expectEqualStrings("/tmp/dev", try expandHome(allocator, null, "/tmp/dev"));
 }
