@@ -82,10 +82,10 @@ const output = writer.toOwnedSlice();  // Get result
 ## Zig Code Style
 
 **Naming:**
-- `snake_case` for functions and methods
+- `camelCase` for functions and methods
 - `snake_case` for variables and parameters
 - `PascalCase` for types, structs, and enums
-- `SCREAMING_SNAKE_CASE` for constants
+- `snake_case` for constants
 
 **Struct initialization:** Prefer explicit type annotation with anonymous literals:
 ```zig

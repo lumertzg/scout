@@ -1,24 +1,26 @@
 //! Streaming discovery batches for projects under one root directory.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
-const Dir = @import("dir.zig");
+const Dir = @import("Dir.zig");
 
-pub const BATCH_SIZE = 64;
-const DIRECTORY_READER_BYTES = 4096;
+pub const batch_size = 64;
+const directory_reader_bytes = 4096;
 
 /// Immutable, arena-owned project names from one directory read.
 pub const Batch = struct {
     root_path: []const u8,
     names: []const []const u8,
+    workspace_id: ?[]const u8 = null,
 };
 
 /// Emits immediate child directories in filesystem discovery order.
-pub fn discover_batches(arena: Allocator, directory: Dir, emit_context: anytype) !void {
-    var reader_buffer: [DIRECTORY_READER_BYTES]u8 align(@alignOf(usize)) = undefined;
+pub fn discoverBatches(arena: Allocator, directory: Dir, emit_context: anytype) !void {
+    var reader_buffer: [directory_reader_bytes]u8 align(@alignOf(usize)) = undefined;
     var reader = std.Io.Dir.Reader.init(directory.handle, &reader_buffer);
-    var entries: [BATCH_SIZE]std.Io.Dir.Entry = undefined;
+    var entries: [batch_size]std.Io.Dir.Entry = undefined;
 
     while (true) {
         const entry_count = try reader.read(directory.io, &entries);
@@ -27,13 +29,13 @@ pub fn discover_batches(arena: Allocator, directory: Dir, emit_context: anytype)
             continue;
         }
 
-        var project_names: [BATCH_SIZE][]const u8 = undefined;
+        var project_names: [batch_size][]const u8 = undefined;
         var project_count: usize = 0;
         var name_byte_count: usize = 0;
 
         for (entries[0..entry_count]) |entry| {
             if (!std.unicode.utf8ValidateSlice(entry.name)) continue;
-            if (!is_project(directory, entry)) continue;
+            if (!isProject(directory, entry)) continue;
 
             project_names[project_count] = entry.name;
             project_count += 1;
@@ -61,11 +63,11 @@ pub fn discover_batches(arena: Allocator, directory: Dir, emit_context: anytype)
             .names = owned_names,
         };
 
-        try emit_context.emit_batch(batch);
+        try emit_context.emitBatch(batch);
     }
 }
 
-fn is_project(directory: Dir, entry: std.Io.Dir.Entry) bool {
+fn isProject(directory: Dir, entry: std.Io.Dir.Entry) bool {
     if (entry.kind == .directory) return true;
     if (entry.kind != .sym_link) return false;
 
@@ -76,12 +78,12 @@ fn is_project(directory: Dir, entry: std.Io.Dir.Entry) bool {
 const BatchCollector = struct {
     batches: std.ArrayList(*Batch) = .empty,
 
-    fn emit_batch(self: *BatchCollector, batch: *Batch) !void {
+    fn emitBatch(self: *BatchCollector, batch: *Batch) !void {
         try self.batches.append(std.testing.allocator, batch);
     }
 };
 
-fn test_root_path(arena: Allocator, sub_path: []const u8) ![]const u8 {
+fn testRootPath(arena: Allocator, sub_path: []const u8) ![]const u8 {
     return std.Io.Dir.path.join(arena, &.{ ".zig-cache", "tmp", sub_path });
 }
 
@@ -98,12 +100,12 @@ test "discovery includes hidden directories and directory symlinks" {
     try tmp.dir.symLink(io, "missing", "broken", .{});
     try tmp.dir.writeFile(io, .{ .sub_path = "file", .data = "x" });
     try tmp.dir.symLink(io, "file", "file-link", .{});
-    if (@import("builtin").os.tag != .windows) {
+    if (builtin.os.tag != .windows) {
         try tmp.dir.createDir(io, &.{0xff}, .default_dir);
     }
 
     var restricted_target: ?std.Io.Dir = null;
-    if (@import("builtin").os.tag != .windows) {
+    if (builtin.os.tag != .windows) {
         restricted_target = try tmp.dir.openDir(io, "target", .{ .iterate = true });
         try restricted_target.?.setPermissions(io, .fromMode(0));
     }
@@ -112,12 +114,12 @@ test "discovery includes hidden directories and directory symlinks" {
         target.close(io);
     };
 
-    const root = try test_root_path(arena, tmp.sub_path[0..]);
-    var directory = try Dir.open_absolute(arena, io, null, root);
+    const root = try testRootPath(arena, tmp.sub_path[0..]);
+    var directory = try Dir.openAbsolute(arena, io, null, root);
     defer directory.close();
     var collector: BatchCollector = .{};
     defer collector.batches.deinit(std.testing.allocator);
-    try discover_batches(arena, directory, &collector);
+    try discoverBatches(arena, directory, &collector);
 
     var found_hidden = false;
     var found_link = false;
@@ -149,16 +151,16 @@ test "discovery streams several batches and has no project limit" {
     defer tmp.cleanup();
     var buffer: [32]u8 = undefined;
     for (0..1025) |index| {
-        const name = try std.fmt.bufPrint(&buffer, "project-{d:0>4}", .{index});
+        const name = try std.mem.print(&buffer, "project-{d:0>4}", .{index});
         try tmp.dir.createDir(io, name, .default_dir);
     }
-    const root = try test_root_path(arena, tmp.sub_path[0..]);
+    const root = try testRootPath(arena, tmp.sub_path[0..]);
 
     var expected: std.ArrayList([]const u8) = .empty;
-    var expected_directory = try Dir.open_absolute(arena, io, null, root);
-    var reader_buffer: [DIRECTORY_READER_BYTES]u8 align(@alignOf(usize)) = undefined;
+    var expected_directory = try Dir.openAbsolute(arena, io, null, root);
+    var reader_buffer: [directory_reader_bytes]u8 align(@alignOf(usize)) = undefined;
     var reader = std.Io.Dir.Reader.init(expected_directory.handle, &reader_buffer);
-    var raw_entries: [BATCH_SIZE]std.Io.Dir.Entry = undefined;
+    var raw_entries: [batch_size]std.Io.Dir.Entry = undefined;
     while (true) {
         const count = try reader.read(io, &raw_entries);
         if (count == 0) {
@@ -171,11 +173,11 @@ test "discovery streams several batches and has no project limit" {
     }
     expected_directory.close();
 
-    var directory = try Dir.open_absolute(arena, io, null, root);
+    var directory = try Dir.openAbsolute(arena, io, null, root);
     defer directory.close();
     var collector: BatchCollector = .{};
     defer collector.batches.deinit(std.testing.allocator);
-    try discover_batches(arena, directory, &collector);
+    try discoverBatches(arena, directory, &collector);
     var count: usize = 0;
     for (collector.batches.items) |batch| {
         for (batch.names) |name| {

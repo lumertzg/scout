@@ -9,8 +9,8 @@ const Matcher = @import("Matcher.zig");
 const Projects = @import("../Projects.zig");
 const Tmux = @import("../Tmux.zig");
 
-const PROJECT_NAME_BYTES_MAX = std.Io.Dir.max_name_bytes;
-const QUERY_CAPACITY_EXPECTED = 64;
+const project_name_bytes_max = std.Io.Dir.max_name_bytes;
+const query_capacity_expected = 64;
 
 pub const Action = enum {
     ignore,
@@ -30,25 +30,27 @@ pub const PendingFilter = enum {
 
 pub const NameNormalizer = *const fn (
     project_name: []const u8,
-    buffer: *[PROJECT_NAME_BYTES_MAX]u8,
+    buffer: *[project_name_bytes_max]u8,
 ) []const u8;
 
-pub const State = struct {
+pub const Picker = struct {
     pub const Entry = struct {
         name: []const u8,
         session_active: bool = false,
+        workspace_id: ?[]const u8 = null,
     };
 
     pub const RankedMatch = struct {
         score: i32,
         entry_index: usize,
-        match_span_size_bytes: u16,
-        project_name_size_bytes: u16,
+        match_span_size_bytes: usize,
+        project_name_size_bytes: usize,
     };
 
     pub const Selection = struct {
         root_path: []const u8,
         project_name: []const u8,
+        workspace_id: ?[]const u8 = null,
     };
 
     /// Read-only state required to draw one frame.
@@ -66,7 +68,7 @@ pub const State = struct {
             return self.entries[match.entry_index];
         }
 
-        pub fn visible_matches(self: RenderView, row_count: usize) []const RankedMatch {
+        pub fn visibleMatches(self: RenderView, row_count: usize) []const RankedMatch {
             assert(self.first_visible_index <= self.matches.len);
             const end = @min(self.first_visible_index + row_count, self.matches.len);
             return self.matches[self.first_visible_index..end];
@@ -94,28 +96,29 @@ pub const State = struct {
     discovery_complete: bool = false,
     sessions_complete: bool = false,
 
-    pub fn init(allocator: Allocator) !State {
-        var query = try std.ArrayList(u8).initCapacity(allocator, QUERY_CAPACITY_EXPECTED);
+    pub fn init(allocator: Allocator) !Picker {
+        var query = try std.ArrayList(u8).initCapacity(allocator, query_capacity_expected);
         errdefer query.deinit(allocator);
 
         return .{
             .query = query,
-            .folded_query = try std.ArrayList(u8).initCapacity(allocator, QUERY_CAPACITY_EXPECTED),
+            .folded_query = try std.ArrayList(u8).initCapacity(allocator, query_capacity_expected),
         };
     }
 
-    pub fn deinit(self: *State, allocator: Allocator) void {
+    pub fn deinit(self: *Picker, allocator: Allocator) void {
         self.entries.deinit(allocator);
         self.query.deinit(allocator);
         self.folded_query.deinit(allocator);
         self.match_storage.deinit(allocator);
         self.partition_scratch.deinit(allocator);
         self.sessions.deinit(allocator);
+        self.* = undefined;
     }
 
     /// Adds a discovered batch and reports whether it changes the visible UI.
-    pub fn append_batch(
-        self: *State,
+    pub fn appendBatch(
+        self: *Picker,
         allocator: Allocator,
         batch: *const Projects.Batch,
     ) !bool {
@@ -133,10 +136,11 @@ pub const State = struct {
         for (batch.names) |name| {
             self.entries.appendAssumeCapacity(.{
                 .name = name,
-                .session_active = self.session_is_active(name),
+                .session_active = batch.workspace_id != null or self.sessionIsActive(name),
+                .workspace_id = batch.workspace_id,
             });
 
-            if (match_name(self, name, self.entries.items.len - 1)) |ranked| {
+            if (matchName(self, name, self.entries.items.len - 1)) |ranked| {
                 self.match_storage.items[self.match_count] = ranked;
                 self.match_count += 1;
             }
@@ -144,7 +148,7 @@ pub const State = struct {
 
         if (new_entry_count > 0) {
             const query_needs_ranking = self.query.items.len > 0;
-            const batch_has_active_session = self.has_active_entries(first_new_entry);
+            const batch_has_active_session = self.hasActiveEntries(first_new_entry);
             self.ordering_pending = self.ordering_pending or
                 query_needs_ranking or batch_has_active_session;
         }
@@ -153,8 +157,8 @@ pub const State = struct {
     }
 
     /// Takes ownership of `sessions` and applies it to all discovered entries.
-    pub fn set_sessions(
-        self: *State,
+    pub fn setSessions(
+        self: *Picker,
         allocator: Allocator,
         sessions: std.StringHashMapUnmanaged(void),
         normalizer: ?NameNormalizer,
@@ -167,7 +171,7 @@ pub const State = struct {
         var entries_changed = false;
 
         for (self.entries.items) |*entry| {
-            const active = self.session_is_active(entry.name);
+            const active = entry.workspace_id != null or self.sessionIsActive(entry.name);
             entries_changed = entries_changed or active != entry.session_active;
             entry.session_active = active;
         }
@@ -181,52 +185,52 @@ pub const State = struct {
         return entries_changed;
     }
 
-    pub fn finish_discovery(self: *State) void {
+    pub fn finishDiscovery(self: *Picker) void {
         self.discovery_complete = true;
     }
 
     /// Seeds the picker with a query supplied on the command line.
-    pub fn set_query(self: *State, allocator: Allocator, query: []const u8) !void {
-        try self.append_query(allocator, query);
+    pub fn setQuery(self: *Picker, allocator: Allocator, query: []const u8) !void {
+        try self.appendQuery(allocator, query);
         if (query.len > 0) self.pending_filter = .refresh;
     }
 
-    pub fn handle_key(self: *State, allocator: Allocator, key: vaxis.Key) !Action {
+    pub fn handleKey(self: *Picker, allocator: Allocator, key: vaxis.Key) !Action {
         const cancel = key.matches(vaxis.Key.escape, .{}) or
             key.matches('c', .{ .ctrl = true });
         if (cancel) return .cancel;
 
         if (key.matches(vaxis.Key.enter, .{})) {
-            self.apply_pending_updates();
+            self.applyPendingUpdates();
             return if (self.match_count == 0) .ignore else .accept;
         }
 
         if (key.matches(vaxis.Key.up, .{}) or key.matches('p', .{ .ctrl = true })) {
-            self.apply_pending_updates();
-            return if (self.move_up()) .redraw else .ignore;
+            self.applyPendingUpdates();
+            return if (self.moveUp()) .redraw else .ignore;
         }
 
         if (key.matches(vaxis.Key.down, .{}) or key.matches('n', .{ .ctrl = true })) {
-            self.apply_pending_updates();
-            return if (self.move_down()) .redraw else .ignore;
+            self.applyPendingUpdates();
+            return if (self.moveDown()) .redraw else .ignore;
         }
 
         if (key.matches(vaxis.Key.backspace, .{})) {
-            return self.handle_backspace();
+            return self.handleBackspace();
         }
 
         const input = key.text orelse return .ignore;
-        if (!accepts_text(key.mods, input)) return .ignore;
-        assert(self.query.items.len <= PROJECT_NAME_BYTES_MAX);
-        if (input.len > PROJECT_NAME_BYTES_MAX - self.query.items.len) return .ignore;
+        if (!acceptsText(key.mods, input)) return .ignore;
+        if (self.query.items.len >= project_name_bytes_max) return .ignore;
+        if (input.len > project_name_bytes_max - self.query.items.len) return .ignore;
 
-        try self.append_query(allocator, input);
+        try self.appendQuery(allocator, input);
         if (self.pending_filter == .none) self.pending_filter = .narrow;
 
         return .redraw;
     }
 
-    fn move_up(self: *State) bool {
+    fn moveUp(self: *Picker) bool {
         if (self.selected_index + 1 >= self.match_count) return false;
 
         self.selected_index += 1;
@@ -234,7 +238,7 @@ pub const State = struct {
         return true;
     }
 
-    fn move_down(self: *State) bool {
+    fn moveDown(self: *Picker) bool {
         if (self.selected_index == 0) return false;
 
         self.selected_index -= 1;
@@ -242,17 +246,17 @@ pub const State = struct {
         return true;
     }
 
-    fn handle_backspace(self: *State) Action {
+    fn handleBackspace(self: *Picker) Action {
         if (self.query.items.len == 0) return .ignore;
 
-        remove_last_codepoint(&self.query);
-        remove_last_codepoint(&self.folded_query);
+        removeLastCodepoint(&self.query);
+        removeLastCodepoint(&self.folded_query);
         self.pending_filter = .refresh;
         return .redraw;
     }
 
     /// Appends raw and folded query bytes as one logical update.
-    fn append_query(self: *State, allocator: Allocator, input: []const u8) !void {
+    fn appendQuery(self: *Picker, allocator: Allocator, input: []const u8) !void {
         assert(self.query.items.len == self.folded_query.items.len);
 
         const old_folded_len = self.folded_query.items.len;
@@ -267,7 +271,7 @@ pub const State = struct {
     }
 
     /// Applies coalesced filter and ordering work after an event batch.
-    pub fn apply_pending_updates(self: *State) void {
+    pub fn applyPendingUpdates(self: *Picker) void {
         const pending_filter = self.pending_filter;
         const ordering_pending = self.ordering_pending;
 
@@ -276,57 +280,58 @@ pub const State = struct {
 
         switch (pending_filter) {
             .none => {},
-            .narrow => self.narrow_matches(),
-            .refresh => self.refresh_matches(),
+            .narrow => self.narrowMatches(),
+            .refresh => self.refreshMatches(),
         }
 
         // Both filter paths produce the final order for the current query.
         if (pending_filter == .none and ordering_pending) {
-            self.order_matches();
+            self.orderMatches();
         }
     }
 
-    fn narrow_matches(self: *State) void {
+    fn narrowMatches(self: *Picker) void {
         var count: usize = 0;
 
         for (self.match_storage.items[0..self.match_count]) |old| {
-            if (match_name(self, self.entries.items[old.entry_index].name, old.entry_index)) |ranked| {
+            const name = self.entries.items[old.entry_index].name;
+            if (matchName(self, name, old.entry_index)) |ranked| {
                 self.match_storage.items[count] = ranked;
                 count += 1;
             }
         }
 
         self.match_count = count;
-        self.sort_ranked();
-        self.reset_selection();
+        self.sortRanked();
+        self.resetSelection();
     }
 
-    fn refresh_matches(self: *State) void {
+    fn refreshMatches(self: *Picker) void {
         self.match_count = 0;
 
         for (self.entries.items, 0..) |entry, index| {
-            if (match_name(self, entry.name, index)) |ranked| {
+            if (matchName(self, entry.name, index)) |ranked| {
                 self.match_storage.items[self.match_count] = ranked;
                 self.match_count += 1;
             }
         }
 
-        self.order_matches();
-        self.reset_selection();
+        self.orderMatches();
+        self.resetSelection();
     }
 
-    fn order_matches(self: *State) void {
+    fn orderMatches(self: *Picker) void {
         if (self.query.items.len == 0) {
-            self.stable_partition();
+            self.stablePartition();
         } else {
-            self.sort_ranked();
+            self.sortRanked();
         }
     }
 
-    fn stable_partition(self: *State) void {
+    fn stablePartition(self: *Picker) void {
         assert(self.partition_scratch.capacity >= self.match_count);
 
-        const selected_entry = self.selected_entry_index();
+        const selected_entry = self.selectedEntryIndex();
         self.partition_scratch.items.len = 0;
 
         for (self.match_storage.items[0..self.match_count]) |match| {
@@ -341,16 +346,17 @@ pub const State = struct {
         }
 
         @memcpy(self.match_storage.items[0..self.match_count], self.partition_scratch.items);
-        self.restore_selection(selected_entry);
+        self.restoreSelection(selected_entry);
     }
 
-    fn sort_ranked(self: *State) void {
-        const selected_entry = self.selected_entry_index();
-        std.mem.sortUnstable(RankedMatch, self.match_storage.items[0..self.match_count], {}, less_than);
-        self.restore_selection(selected_entry);
+    fn sortRanked(self: *Picker) void {
+        const selected_entry = self.selectedEntryIndex();
+        const matches = self.match_storage.items[0..self.match_count];
+        std.mem.sortUnstable(RankedMatch, matches, {}, lessThan);
+        self.restoreSelection(selected_entry);
     }
 
-    fn less_than(_: void, left: RankedMatch, right: RankedMatch) bool {
+    fn lessThan(_: void, left: RankedMatch, right: RankedMatch) bool {
         if (left.score != right.score) return left.score > right.score;
 
         if (left.match_span_size_bytes != right.match_span_size_bytes) {
@@ -363,13 +369,13 @@ pub const State = struct {
         return left.entry_index < right.entry_index;
     }
 
-    fn selected_entry_index(self: State) ?usize {
+    fn selectedEntryIndex(self: Picker) ?usize {
         if (!self.selection_moved or self.match_count == 0) return null;
         assert(self.selected_index < self.match_count);
         return self.match_storage.items[self.selected_index].entry_index;
     }
 
-    fn restore_selection(self: *State, selected_entry: ?usize) void {
+    fn restoreSelection(self: *Picker, selected_entry: ?usize) void {
         if (selected_entry) |entry_index| {
             for (self.match_storage.items[0..self.match_count], 0..) |match, index| {
                 if (match.entry_index == entry_index) {
@@ -379,50 +385,52 @@ pub const State = struct {
             }
         }
 
-        self.reset_selection();
+        self.resetSelection();
     }
 
-    fn reset_selection(self: *State) void {
+    fn resetSelection(self: *Picker) void {
         self.selected_index = 0;
         self.first_visible_index = 0;
         self.selection_moved = false;
     }
 
-    fn has_active_entries(self: State, first_entry: usize) bool {
+    fn hasActiveEntries(self: Picker, first_entry: usize) bool {
         for (self.entries.items[first_entry..]) |entry| {
             if (entry.session_active) return true;
         }
         return false;
     }
 
-    fn session_is_active(self: State, project_name: []const u8) bool {
+    fn sessionIsActive(self: Picker, project_name: []const u8) bool {
         const normalizer = self.session_name_normalizer orelse
             return self.sessions.contains(project_name);
 
-        var buffer: [PROJECT_NAME_BYTES_MAX]u8 = undefined;
+        var buffer: [project_name_bytes_max]u8 = undefined;
         return self.sessions.contains(normalizer(project_name, &buffer));
     }
 
     /// Returns the selected project name, or null when nothing matches.
-    pub fn selected_item(self: State) ?[]const u8 {
+    pub fn selectedItem(self: Picker) ?[]const u8 {
         if (self.match_count == 0) return null;
         assert(self.selected_index < self.match_count);
         return self.entries.items[self.match_storage.items[self.selected_index].entry_index].name;
     }
 
     /// Returns the complete selected project, if one exists.
-    pub fn selection(self: State) ?Selection {
-        const project_name = self.selected_item() orelse return null;
+    pub fn selection(self: Picker) ?Selection {
+        const project_name = self.selectedItem() orelse return null;
         assert(self.root_path != null);
+        const entry_index = self.match_storage.items[self.selected_index].entry_index;
 
         return .{
             .root_path = self.root_path.?,
             .project_name = project_name,
+            .workspace_id = self.entries.items[entry_index].workspace_id,
         };
     }
 
     /// Borrows the slices needed by the renderer for the current frame.
-    pub fn render_view(self: State) RenderView {
+    pub fn renderView(self: Picker) RenderView {
         assert(self.match_count <= self.match_storage.items.len);
 
         return .{
@@ -437,7 +445,7 @@ pub const State = struct {
     }
 
     /// Moves the visible window just enough to contain the selection.
-    pub fn sync_scroll(self: *State, visible_rows: usize) void {
+    pub fn syncScroll(self: *Picker, visible_rows: usize) void {
         if (visible_rows == 0 or self.match_count == 0) return;
         assert(self.selected_index < self.match_count);
 
@@ -449,26 +457,26 @@ pub const State = struct {
     }
 };
 
-fn match_name(state: *const State, name: []const u8, index: usize) ?State.RankedMatch {
+fn matchName(state: *const Picker, name: []const u8, index: usize) ?Picker.RankedMatch {
     const result: Matcher.Result = if (state.query.items.len == 0)
         .{ .score = 0, .start = 0, .end = 0 }
     else
-        Matcher.rank_folded(state.query.items, state.folded_query.items, name) orelse return null;
+        Matcher.rankFolded(state.query.items, state.folded_query.items, name) orelse return null;
 
     return .{
         .score = result.score,
         .entry_index = index,
-        .match_span_size_bytes = @intCast(result.end - result.start),
-        .project_name_size_bytes = @intCast(name.len),
+        .match_span_size_bytes = result.end - result.start,
+        .project_name_size_bytes = name.len,
     };
 }
 
-fn accepts_text(mods: vaxis.Key.Modifiers, text: []const u8) bool {
+fn acceptsText(mods: vaxis.Key.Modifiers, text: []const u8) bool {
     if (mods.ctrl or mods.alt or mods.super or mods.hyper or mods.meta) return false;
     return text.len > 0 and text[0] >= ' ' and text[0] != 0x7f;
 }
 
-fn remove_last_codepoint(query: *std.ArrayList(u8)) void {
+fn removeLastCodepoint(query: *std.ArrayList(u8)) void {
     assert(query.items.len > 0);
 
     var len = query.items.len - 1;
@@ -476,17 +484,17 @@ fn remove_last_codepoint(query: *std.ArrayList(u8)) void {
     query.items.len = len;
 }
 
-fn test_state(names: []const []const u8) !State {
-    var state = try State.init(std.testing.allocator);
+fn testState(names: []const []const u8) !Picker {
+    var state = try Picker.init(std.testing.allocator);
     errdefer state.deinit(std.testing.allocator);
 
     const batch: Projects.Batch = .{ .root_path = "/", .names = names };
-    _ = try state.append_batch(std.testing.allocator, &batch);
+    _ = try state.appendBatch(std.testing.allocator, &batch);
     return state;
 }
 
-fn set_test_sessions(
-    state: *State,
+fn setTestSessions(
+    state: *Picker,
     names: []const []const u8,
     normalizer: ?NameNormalizer,
 ) !bool {
@@ -498,21 +506,21 @@ fn set_test_sessions(
             return err;
         };
     }
-    // State owns the map as soon as set_sessions is called, including on error.
-    return state.set_sessions(std.testing.allocator, sessions, normalizer);
+    // Picker owns the map as soon as setSessions is called, including on error.
+    return state.setSessions(std.testing.allocator, sessions, normalizer);
 }
 
-fn type_query(state: *State, text: []const u8) !void {
+fn typeQuery(state: *Picker, text: []const u8) !void {
     for (text) |byte| {
         const input = [1]u8{byte};
-        _ = try state.handle_key(std.testing.allocator, .{
+        _ = try state.handleKey(std.testing.allocator, .{
             .codepoint = byte,
             .text = &input,
         });
     }
 }
 
-fn expect_match_order(state: State, expected: []const []const u8) !void {
+fn expectMatchOrder(state: Picker, expected: []const []const u8) !void {
     try std.testing.expectEqual(expected.len, state.match_count);
 
     for (expected, state.match_storage.items[0..state.match_count]) |name, match| {
@@ -521,115 +529,116 @@ fn expect_match_order(state: State, expected: []const []const u8) !void {
 }
 
 test "empty query partitions active entries stably" {
-    var state = try test_state(&.{ "a", "b", "c", "d" });
+    var state = try testState(&.{ "a", "b", "c", "d" });
     defer state.deinit(std.testing.allocator);
 
-    try std.testing.expect(try set_test_sessions(&state, &.{ "b", "d" }, null));
-    state.apply_pending_updates();
+    try std.testing.expect(try setTestSessions(&state, &.{ "b", "d" }, null));
+    state.applyPendingUpdates();
 
-    try expect_match_order(state, &.{ "b", "d", "a", "c" });
+    try expectMatchOrder(state, &.{ "b", "d", "a", "c" });
 }
 
 test "typed query ignores active state and coalesces filtering" {
-    var state = try test_state(&.{ "source", "scout", "other" });
+    var state = try testState(&.{ "source", "scout", "other" });
     defer state.deinit(std.testing.allocator);
 
-    _ = try set_test_sessions(&state, &.{"source"}, null);
-    try type_query(&state, "sc");
+    _ = try setTestSessions(&state, &.{"source"}, null);
+    try typeQuery(&state, "sc");
 
     try std.testing.expectEqual(PendingFilter.narrow, state.pending_filter);
-    state.apply_pending_updates();
+    state.applyPendingUpdates();
 
     try std.testing.expectEqual(@as(usize, 2), state.match_count);
-    try std.testing.expectEqualStrings("scout", state.selected_item().?);
+    try std.testing.expectEqualStrings("scout", state.selectedItem().?);
     try std.testing.expect(state.entries.items[0].session_active);
     try std.testing.expectEqual(PendingFilter.none, state.pending_filter);
     try std.testing.expect(!state.ordering_pending);
 }
 
 test "command-line query is prefilled before discovery" {
-    var state = try State.init(std.testing.allocator);
+    var state = try Picker.init(std.testing.allocator);
     defer state.deinit(std.testing.allocator);
 
-    try state.set_query(std.testing.allocator, "sc");
+    try state.setQuery(std.testing.allocator, "sc");
     const batch: Projects.Batch = .{
         .root_path = "/",
         .names = &.{ "source", "scout", "other" },
     };
-    _ = try state.append_batch(std.testing.allocator, &batch);
-    state.apply_pending_updates();
+    _ = try state.appendBatch(std.testing.allocator, &batch);
+    state.applyPendingUpdates();
 
     try std.testing.expectEqualStrings("sc", state.query.items);
-    try expect_match_order(state, &.{ "scout", "source" });
+    try expectMatchOrder(state, &.{ "scout", "source" });
 }
 
 test "sessions arriving before projects mark later batches immediately" {
-    var state = try State.init(std.testing.allocator);
+    var state = try Picker.init(std.testing.allocator);
     defer state.deinit(std.testing.allocator);
 
-    try std.testing.expect(!try set_test_sessions(
+    try std.testing.expect(!try setTestSessions(
         &state,
         &.{"my_project"},
-        Tmux.session_name,
+        Tmux.sessionName,
     ));
     try std.testing.expect(state.sessions_complete);
 
     const batch: Projects.Batch = .{ .root_path = "/", .names = &.{ "other", "my.project" } };
-    _ = try state.append_batch(std.testing.allocator, &batch);
-    state.apply_pending_updates();
+    _ = try state.appendBatch(std.testing.allocator, &batch);
+    state.applyPendingUpdates();
     try std.testing.expect(state.entries.items[1].session_active);
-    try std.testing.expectEqualStrings("my.project", state.selected_item().?);
+    try std.testing.expectEqualStrings("my.project", state.selectedItem().?);
 }
 
 test "empty session completion has no visible effect" {
-    var state = try test_state(&.{"project"});
+    var state = try testState(&.{"project"});
     defer state.deinit(std.testing.allocator);
 
-    try std.testing.expect(!try set_test_sessions(&state, &.{}, null));
+    try std.testing.expect(!try setTestSessions(&state, &.{}, null));
     try std.testing.expect(state.sessions_complete);
     try std.testing.expect(!state.ordering_pending);
 }
 
 test "several batches and sessions coalesce into one stable partition" {
-    var state = try State.init(std.testing.allocator);
+    var state = try Picker.init(std.testing.allocator);
     defer state.deinit(std.testing.allocator);
     const first: Projects.Batch = .{ .root_path = "/", .names = &.{ "a", "b" } };
     const second: Projects.Batch = .{ .root_path = "/", .names = &.{ "c", "d" } };
-    _ = try state.append_batch(std.testing.allocator, &first);
-    _ = try state.append_batch(std.testing.allocator, &second);
-    _ = try set_test_sessions(&state, &.{ "b", "d" }, null);
+    _ = try state.appendBatch(std.testing.allocator, &first);
+    _ = try state.appendBatch(std.testing.allocator, &second);
+    _ = try setTestSessions(&state, &.{ "b", "d" }, null);
     try std.testing.expect(state.ordering_pending);
 
-    state.apply_pending_updates();
+    state.applyPendingUpdates();
 
-    try expect_match_order(state, &.{ "b", "d", "a", "c" });
+    try expectMatchOrder(state, &.{ "b", "d", "a", "c" });
     try std.testing.expect(!state.ordering_pending);
 }
 
 test "late sessions preserve an explicitly moved selection" {
-    var state = try test_state(&.{ "a", "b", "c" });
+    var state = try testState(&.{ "a", "b", "c" });
     defer state.deinit(std.testing.allocator);
 
-    _ = try state.handle_key(std.testing.allocator, .{ .codepoint = vaxis.Key.up });
-    try std.testing.expectEqualStrings("b", state.selected_item().?);
+    _ = try state.handleKey(std.testing.allocator, .{ .codepoint = vaxis.Key.up });
+    try std.testing.expectEqualStrings("b", state.selectedItem().?);
 
-    _ = try set_test_sessions(&state, &.{"c"}, null);
-    state.apply_pending_updates();
+    _ = try setTestSessions(&state, &.{"c"}, null);
+    state.applyPendingUpdates();
 
-    try std.testing.expectEqualStrings("b", state.selected_item().?);
-    try std.testing.expectEqualStrings("c", state.entries.items[state.match_storage.items[0].entry_index].name);
+    try std.testing.expectEqualStrings("b", state.selectedItem().?);
+    const first_entry = state.match_storage.items[0].entry_index;
+    try std.testing.expectEqualStrings("c", state.entries.items[first_entry].name);
 }
 
 test "query shrink rebuilds matches excluded by query growth" {
-    var state = try test_state(&.{ "scout", "source", "other" });
+    var state = try testState(&.{ "scout", "source", "other" });
     defer state.deinit(std.testing.allocator);
 
-    try type_query(&state, "scx");
-    state.apply_pending_updates();
+    try typeQuery(&state, "scx");
+    state.applyPendingUpdates();
     try std.testing.expectEqual(@as(usize, 0), state.match_count);
 
-    _ = try state.handle_key(std.testing.allocator, .{ .codepoint = vaxis.Key.backspace });
+    _ = try state.handleKey(std.testing.allocator, .{ .codepoint = vaxis.Key.backspace });
     try std.testing.expectEqual(PendingFilter.refresh, state.pending_filter);
-    state.apply_pending_updates();
+    state.applyPendingUpdates();
     try std.testing.expectEqual(@as(usize, 2), state.match_count);
 }

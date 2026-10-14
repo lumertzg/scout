@@ -11,7 +11,7 @@ builds:
       - aarch64-linux-gnu
       - aarch64-macos
     flags:
-      - -Doptimize=ReleaseFast
+      - -Doptimize=fast
       - "-Dversion={{ .Version }}"
 
 archives:

@@ -73,7 +73,7 @@ pub const Mode = union(enum) {
 };
 
 /// Resolves runtime state only for the selected backend.
-pub fn resolve_mode(
+pub fn resolveMode(
     self: Self,
     arena: Allocator,
     environ_map: *const EnvironMap,
@@ -85,24 +85,24 @@ pub fn resolve_mode(
         } },
         .herdr => .{ .herdr = .{
             .inside = std.mem.eql(u8, environ_map.get("HERDR_ENV") orelse "", "1"),
-            .socket_path = try HerdrBackend.resolve_socket_path(arena, environ_map),
+            .socket_path = try HerdrBackend.resolveSocketPath(arena, environ_map),
         } },
     };
 }
 
 /// Explains invalid Herdr environment settings.
-pub fn error_message(err: Error) []const u8 {
+pub fn errorMessage(err: Error) []const u8 {
     return switch (err) {
         error.InvalidSocketPath => "HERDR_SOCKET_PATH must not be empty",
         error.InvalidSessionName => "HERDR_SESSION must be a valid session name",
     };
 }
 
-fn test_environ() !EnvironMap {
+fn testEnviron() !EnvironMap {
     return EnvironMap.init(std.testing.allocator);
 }
 
-fn parse_args(environ_map: *const EnvironMap, values: []const []const u8) zlap.Error!Self {
+fn parseArgs(environ_map: *const EnvironMap, values: []const []const u8) zlap.Error!Self {
     return zlap.parseFrom(Self, std.testing.allocator, .{
         .program = "scout",
         .values = values,
@@ -110,40 +110,40 @@ fn parse_args(environ_map: *const EnvironMap, values: []const []const u8) zlap.E
 }
 
 test "arguments override environment and can surround the query" {
-    var environ_map = try test_environ();
+    var environ_map = try testEnviron();
     defer environ_map.deinit();
     try environ_map.put("SCOUT_PATH", "/environment/projects");
     try environ_map.put("SCOUT_BACKEND", "herdr");
 
-    const before = try parse_args(&environ_map, &.{
+    const before = try parseArgs(&environ_map, &.{
         "query", "--path", "/arguments/projects", "--backend=tmux",
     });
     try std.testing.expectEqualStrings("query", before.query.?);
     try std.testing.expectEqualStrings("/arguments/projects", before.root_path);
     try std.testing.expectEqual(.tmux, before.backend);
 
-    const after = try parse_args(&environ_map, &.{ "--backend", "tmux", "query" });
+    const after = try parseArgs(&environ_map, &.{ "--backend", "tmux", "query" });
     try std.testing.expectEqualStrings("query", after.query.?);
     try std.testing.expectEqual(.tmux, after.backend);
 }
 
 test "arguments use environment defaults and accept hyphenated paths" {
-    var environ_map = try test_environ();
+    var environ_map = try testEnviron();
     defer environ_map.deinit();
     try environ_map.put("SCOUT_PATH", "/environment/projects");
     try environ_map.put("SCOUT_BACKEND", "tmux");
 
-    const environment = try parse_args(&environ_map, &.{});
+    const environment = try parseArgs(&environ_map, &.{});
     try std.testing.expectEqualStrings("/environment/projects", environment.root_path);
     try std.testing.expectEqual(.tmux, environment.backend);
     try std.testing.expect(environment.query == null);
 
-    const hyphen_path = try parse_args(&environ_map, &.{ "--path", "-projects" });
+    const hyphen_path = try parseArgs(&environ_map, &.{ "--path", "-projects" });
     try std.testing.expectEqualStrings("-projects", hyphen_path.root_path);
 }
 
 test "invalid backend values and native actions produce zlap outcomes" {
-    var environ_map = try test_environ();
+    var environ_map = try testEnviron();
     defer environ_map.deinit();
     try environ_map.put("SCOUT_BACKEND", "invalid");
 
@@ -163,36 +163,36 @@ test "invalid backend values and native actions produce zlap outcomes" {
         .{ .env = .{ .map = &environ_map } },
     ));
 
-    const escaped = try parse_args(&environ_map, &.{ "--backend=path", "--", "help" });
+    const escaped = try parseArgs(&environ_map, &.{ "--backend=path", "--", "help" });
     try std.testing.expectEqualStrings("help", escaped.query.?);
     try std.testing.expectEqual(.path, escaped.backend);
 }
 
 test "configuration resolves only the selected backend state" {
-    var environ_map = try test_environ();
+    var environ_map = try testEnviron();
     defer environ_map.deinit();
     try environ_map.put("HERDR_SOCKET_PATH", "");
     try environ_map.put("TMUX", "/tmp/tmux");
 
     const tmux: Self = .{ .backend = .tmux };
-    const tmux_mode = try tmux.resolve_mode(std.testing.allocator, &environ_map);
+    const tmux_mode = try tmux.resolveMode(std.testing.allocator, &environ_map);
     try std.testing.expect(tmux_mode.tmux.inside);
 
     const herdr: Self = .{ .backend = .herdr };
     try std.testing.expectError(
         error.InvalidSocketPath,
-        herdr.resolve_mode(std.testing.allocator, &environ_map),
+        herdr.resolveMode(std.testing.allocator, &environ_map),
     );
 }
 
 test "configuration resolves Herdr state when selected" {
-    var environ_map = try test_environ();
+    var environ_map = try testEnviron();
     defer environ_map.deinit();
     try environ_map.put("HERDR_ENV", "1");
     try environ_map.put("HERDR_SOCKET_PATH", "/tmp/herdr.sock");
 
     const config: Self = .{ .backend = .herdr };
-    const mode = try config.resolve_mode(std.testing.allocator, &environ_map);
+    const mode = try config.resolveMode(std.testing.allocator, &environ_map);
     try std.testing.expect(mode.herdr.inside);
     try std.testing.expectEqualStrings("/tmp/herdr.sock", mode.herdr.socket_path);
 }

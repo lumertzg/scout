@@ -7,13 +7,13 @@ const vaxis = @import("vaxis");
 
 const Projects = @import("../Projects.zig");
 const Renderer = @import("Renderer.zig");
-const State = @import("State.zig").State;
-const NameNormalizer = @import("State.zig").NameNormalizer;
+const Picker = @import("Picker.zig").Picker;
+const NameNormalizer = @import("Picker.zig").NameNormalizer;
 
-const TTY_BUFFER_BYTES = 1024;
+const tty_buffer_bytes = 1024;
 
 pub const SessionSet = std.StringHashMapUnmanaged(void);
-pub const Selection = State.Selection;
+pub const Selection = Picker.Selection;
 
 allocator: Allocator,
 io: std.Io,
@@ -42,7 +42,7 @@ pub const WorkerHandle = struct {
 
     /// Stops every task and waits until none can use the event loop again.
     /// Implementations must allow repeated calls.
-    pub fn cancel_and_await(self: WorkerHandle, io: std.Io) void {
+    pub fn cancelAndAwait(self: WorkerHandle, io: std.Io) void {
         self.cancel_and_await_fn(self.opaque_context, io);
     }
 };
@@ -51,14 +51,14 @@ pub const WorkerHandle = struct {
 pub const Loader = struct {
     /// Must remain valid until the returned worker handle has been cleaned up.
     context: *anyopaque,
-    /// The event loop remains valid until `cancel_and_await` returns.
+    /// The event loop remains valid until `cancelAndAwait` returns.
     start_loading: *const fn (*anyopaque, *vaxis.Loop(Event)) anyerror!WorkerHandle,
 };
 
 const Runtime = struct {
     allocator: Allocator,
     io: std.Io,
-    tty_buffer: [TTY_BUFFER_BYTES]u8,
+    tty_buffer: [tty_buffer_bytes]u8,
     tty: vaxis.Tty,
     vx: vaxis.Vaxis,
     loop: vaxis.Loop(Event),
@@ -72,7 +72,7 @@ const Runtime = struct {
         self.resize_installed = false;
         // Register worker cleanup first so later terminal cleanup runs before
         // waiting for canceled workers on every initialization error path.
-        errdefer if (self.workers) |workers| workers.cancel_and_await(ui.io);
+        errdefer if (self.workers) |workers| workers.cancelAndAwait(ui.io);
         self.tty = try .init(ui.io, &self.tty_buffer);
         errdefer self.tty.deinit();
         self.vx = try vaxis.init(ui.io, ui.allocator, ui.environ_map, .{});
@@ -95,7 +95,8 @@ const Runtime = struct {
         self.loop.stop();
         self.vx.deinit(self.allocator, self.tty.writer());
         self.tty.deinit();
-        if (self.workers) |workers| workers.cancel_and_await(self.io);
+        if (self.workers) |workers| workers.cancelAndAwait(self.io);
+        self.* = undefined;
     }
 };
 
@@ -106,26 +107,31 @@ const EventEffect = union(enum) {
     selection: Selection,
 };
 
-pub fn init(allocator: Allocator, io: std.Io, environ_map: *std.process.Environ.Map, loader: Loader) Self {
+pub fn init(
+    allocator: Allocator,
+    io: std.Io,
+    environ_map: *std.process.Environ.Map,
+    loader: Loader,
+) Self {
     return .{ .allocator = allocator, .io = io, .environ_map = environ_map, .loader = loader };
 }
 
 pub fn pick(self: Self) !?Selection {
-    return self.pick_with_query(null);
+    return self.pickWithQuery(null);
 }
 
 /// Runs the picker with an optional query already entered.
-pub fn pick_with_query(self: Self, initial_query: ?[]const u8) !?Selection {
+pub fn pickWithQuery(self: Self, initial_query: ?[]const u8) !?Selection {
     var runtime: Runtime = undefined;
     try runtime.init(self);
     defer runtime.deinit();
 
-    var state = try State.init(self.allocator);
+    var state = try Picker.init(self.allocator);
     defer state.deinit(self.allocator);
 
-    if (initial_query) |query| try state.set_query(self.allocator, query);
+    if (initial_query) |query| try state.setQuery(self.allocator, query);
 
-    var frame: Renderer.FrameState = .{};
+    var frame: Renderer.Frame = .{};
     var screen_ready = false;
 
     while (true) {
@@ -137,7 +143,7 @@ pub fn pick_with_query(self: Self, initial_query: ?[]const u8) !?Selection {
             defer runtime.loop.queue.unlock();
 
             while (runtime.loop.queue.drain()) |event| {
-                switch (try self.handle_event(&runtime, &state, &screen_ready, event)) {
+                switch (try self.handleEvent(&runtime, &state, &screen_ready, event)) {
                     .none => {},
                     .redraw => redraw = true,
                     .cancel => return null,
@@ -146,17 +152,17 @@ pub fn pick_with_query(self: Self, initial_query: ?[]const u8) !?Selection {
             }
         }
 
-        state.apply_pending_updates();
+        state.applyPendingUpdates();
         if (screen_ready and redraw) {
             try Renderer.draw(&frame, &state, &runtime.vx, runtime.tty.writer());
         }
     }
 }
 
-fn handle_event(
+fn handleEvent(
     self: Self,
     runtime: *Runtime,
-    state: *State,
+    state: *Picker,
     screen_ready: *bool,
     event: Event,
 ) !EventEffect {
@@ -167,7 +173,7 @@ fn handle_event(
             return .redraw;
         },
         .key_press => |key| {
-            return switch (try state.handle_key(self.allocator, key)) {
+            return switch (try state.handleKey(self.allocator, key)) {
                 .ignore => .none,
                 .redraw => .redraw,
                 .cancel => .cancel,
@@ -178,18 +184,18 @@ fn handle_event(
             };
         },
         .batch => |batch| {
-            return if (try state.append_batch(self.allocator, batch))
+            return if (try state.appendBatch(self.allocator, batch))
                 .redraw
             else
                 .none;
         },
         .discovery_result => |result| {
             try result;
-            state.finish_discovery();
+            state.finishDiscovery();
             return .redraw;
         },
         .sessions => |sessions| {
-            return if (try state.set_sessions(
+            return if (try state.setSessions(
                 self.allocator,
                 sessions.names,
                 sessions.name_normalizer,
@@ -202,5 +208,5 @@ fn handle_event(
 }
 
 test {
-    _ = @import("State.zig");
+    _ = @import("Picker.zig");
 }

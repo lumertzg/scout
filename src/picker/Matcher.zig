@@ -3,33 +3,33 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-const SCORE_MATCH = 16;
-const BONUS_CONSECUTIVE = 24;
-const BONUS_BOUNDARY_START = 32;
-const BONUS_PATH_SEPARATOR = 30;
-const BONUS_WHITESPACE = 26;
-const BONUS_DELIMITER = 20;
-const BONUS_CAMEL_CASE = 18;
-const GAP_PENALTY_MAX = 16;
-const LEADING_PENALTY_MAX = 16;
+const score_match = 16;
+const bonus_consecutive = 24;
+const bonus_boundary_start = 32;
+const bonus_path_separator = 30;
+const bonus_whitespace = 26;
+const bonus_delimiter = 20;
+const bonus_camel_case = 18;
+const gap_penalty_max = 16;
+const leading_penalty_max = 16;
 
 const AlignmentOptions = struct {
     query_is_folded: bool = false,
     collect_positions: bool = false,
 };
 
-const BOUNDARY_BONUSES: [256]u8 = blk: {
-    var bonuses = [_]u8{0} ** 256;
+const boundary_bonuses: [256]u8 = blk: {
+    var bonuses: [256]u8 = @splat(0);
 
     for (0..bonuses.len) |value| {
         const byte: u8 = @intCast(value);
-        if (std.ascii.isWhitespace(byte)) bonuses[value] = BONUS_WHITESPACE;
+        if (std.ascii.isWhitespace(byte)) bonuses[value] = bonus_whitespace;
     }
 
-    bonuses['/'] = BONUS_PATH_SEPARATOR;
-    bonuses['\\'] = BONUS_PATH_SEPARATOR;
+    bonuses['/'] = bonus_path_separator;
+    bonuses['\\'] = bonus_path_separator;
     for ([_]u8{ '_', '-', '.', ':', ';', ',', '|' }) |byte| {
-        bonuses[byte] = BONUS_DELIMITER;
+        bonuses[byte] = bonus_delimiter;
     }
 
     break :blk bonuses;
@@ -45,19 +45,19 @@ pub const Result = struct {
 
 /// Scores a project name while favoring compact matches.
 pub fn rank(query: []const u8, candidate: []const u8) ?Result {
-    return find_alignment(.{}, query, query, candidate, 0, candidate.len, {});
+    return findAlignment(.{}, query, query, candidate, 0, candidate.len, {});
 }
 
 /// Returns whether query characters occur in order within candidate.
 pub fn matches(query: []const u8, candidate: []const u8) bool {
     if (query.len == 0) return true;
-    return find_forward_end(false, query, candidate, 0, candidate.len) != null;
+    return findForwardEnd(false, query, candidate, 0, candidate.len) != null;
 }
 
 /// Scores with a query folded to lowercase ASCII.
-pub fn rank_folded(query: []const u8, folded_query: []const u8, candidate: []const u8) ?Result {
+pub fn rankFolded(query: []const u8, folded_query: []const u8, candidate: []const u8) ?Result {
     assert(query.len == folded_query.len);
-    return find_alignment(
+    return findAlignment(
         .{ .query_is_folded = true },
         query,
         folded_query,
@@ -69,16 +69,15 @@ pub fn rank_folded(query: []const u8, folded_query: []const u8, candidate: []con
 }
 
 /// Scores and writes the byte positions used by the selected alignment.
-pub fn rank_folded_positions(
+pub fn rankFoldedPositions(
     query: []const u8,
     folded_query: []const u8,
     candidate: []const u8,
-    output: []u16,
+    output: []usize,
 ) ?Result {
     assert(query.len == folded_query.len);
     assert(output.len >= query.len);
-    assert(candidate.len <= std.math.maxInt(u16));
-    return find_alignment(
+    return findAlignment(
         .{ .query_is_folded = true, .collect_positions = true },
         query,
         folded_query,
@@ -90,10 +89,9 @@ pub fn rank_folded_positions(
 }
 
 /// Writes the byte positions used by the highest-ranked alignment.
-pub fn positions(query: []const u8, candidate: []const u8, output: []u16) ?[]const u16 {
+pub fn positions(query: []const u8, candidate: []const u8, output: []usize) ?[]const usize {
     assert(output.len >= query.len);
-    assert(candidate.len <= std.math.maxInt(u16));
-    _ = find_alignment(
+    _ = findAlignment(
         .{ .collect_positions = true },
         query,
         query,
@@ -106,24 +104,24 @@ pub fn positions(query: []const u8, candidate: []const u8, output: []u16) ?[]con
 }
 
 /// Writes positions using a folded query.
-pub fn positions_folded(
+pub fn positionsFolded(
     query: []const u8,
     folded_query: []const u8,
     candidate: []const u8,
-    output: []u16,
-) ?[]const u16 {
-    _ = rank_folded_positions(query, folded_query, candidate, output) orelse return null;
+    output: []usize,
+) ?[]const usize {
+    _ = rankFoldedPositions(query, folded_query, candidate, output) orelse return null;
     return output[0..query.len];
 }
 
-fn find_alignment(
+fn findAlignment(
     comptime options: AlignmentOptions,
     query: []const u8,
     match_query: []const u8,
     candidate: []const u8,
     window_start: usize,
     window_end: usize,
-    positions_output: if (options.collect_positions) []u16 else void,
+    positions_output: if (options.collect_positions) []usize else void,
 ) ?Result {
     assert(query.len == match_query.len);
     assert(window_start <= window_end);
@@ -131,7 +129,7 @@ fn find_alignment(
     if (query.len == 0) return .{ .score = 0, .start = 0, .end = 0 };
     if (query.len > window_end - window_start) return null;
 
-    if (score_prefix_alignment(
+    if (scorePrefixAlignment(
         options,
         query,
         match_query,
@@ -143,7 +141,7 @@ fn find_alignment(
 
     // Find the earliest complete match, then walk backward from its end to
     // tighten the alignment before scoring it.
-    const forward_end = find_forward_end(
+    const forward_end = findForwardEnd(
         options.query_is_folded,
         match_query,
         candidate,
@@ -151,7 +149,7 @@ fn find_alignment(
         window_end,
     ) orelse return null;
 
-    const start = find_backward_start(
+    const start = findBackwardStart(
         options.query_is_folded,
         match_query,
         candidate,
@@ -165,21 +163,22 @@ fn find_alignment(
     var end = start;
 
     for (start..forward_end) |candidate_index| {
-        if (!equal_fold(options.query_is_folded, candidate[candidate_index], match_query[query_index])) continue;
+        const candidate_byte = candidate[candidate_index];
+        if (!equalFold(options.query_is_folded, candidate_byte, match_query[query_index])) continue;
 
         if (comptime options.collect_positions) {
-            positions_output[query_index] = @intCast(candidate_index);
+            positions_output[query_index] = candidate_index;
         }
 
-        score += SCORE_MATCH + boundary_bonus(candidate, candidate_index);
+        score += score_match + boundaryBonus(candidate, candidate_index);
         if (candidate[candidate_index] == query[query_index]) score += 1;
 
         if (previous_match) |previous| {
             if (candidate_index == previous + 1) {
-                score += BONUS_CONSECUTIVE;
+                score += bonus_consecutive;
             } else {
                 const gap = candidate_index - previous - 1;
-                score -= @intCast(@min(gap, GAP_PENALTY_MAX));
+                score -= @intCast(@min(gap, gap_penalty_max));
             }
         }
 
@@ -190,18 +189,18 @@ fn find_alignment(
         if (query_index == query.len) break;
     }
 
-    score -= @intCast(@min(start - window_start, LEADING_PENALTY_MAX));
+    score -= @intCast(@min(start - window_start, leading_penalty_max));
     return .{ .score = score, .start = start, .end = end };
 }
 
-inline fn score_prefix_alignment(
+inline fn scorePrefixAlignment(
     comptime options: AlignmentOptions,
     query: []const u8,
     match_query: []const u8,
     candidate: []const u8,
     window_start: usize,
     window_end: usize,
-    positions_output: if (options.collect_positions) []u16 else void,
+    positions_output: if (options.collect_positions) []usize else void,
 ) ?Result {
     if (query.len > window_end - window_start) return null;
 
@@ -209,21 +208,21 @@ inline fn score_prefix_alignment(
     for (0..query.len) |query_index| {
         const candidate_byte = candidate[window_start + query_index];
         const query_byte = match_query[query_index];
-        if (!equal_fold(options.query_is_folded, candidate_byte, query_byte)) return null;
+        if (!equalFold(options.query_is_folded, candidate_byte, query_byte)) return null;
 
         if (comptime options.collect_positions) {
-            positions_output[query_index] = @intCast(window_start + query_index);
+            positions_output[query_index] = window_start + query_index;
         }
 
-        score += SCORE_MATCH + boundary_bonus(candidate, window_start + query_index);
+        score += score_match + boundaryBonus(candidate, window_start + query_index);
         if (candidate_byte == query[query_index]) score += 1;
-        if (query_index > 0) score += BONUS_CONSECUTIVE;
+        if (query_index > 0) score += bonus_consecutive;
     }
 
     return .{ .score = score, .start = window_start, .end = window_start + query.len };
 }
 
-fn find_forward_end(
+fn findForwardEnd(
     comptime query_is_folded: bool,
     match_query: []const u8,
     candidate: []const u8,
@@ -232,7 +231,8 @@ fn find_forward_end(
 ) ?usize {
     var query_index: usize = 0;
     for (window_start..window_end) |candidate_index| {
-        if (!equal_fold(query_is_folded, candidate[candidate_index], match_query[query_index])) continue;
+        const candidate_byte = candidate[candidate_index];
+        if (!equalFold(query_is_folded, candidate_byte, match_query[query_index])) continue;
 
         query_index += 1;
         if (query_index == match_query.len) return candidate_index + 1;
@@ -240,7 +240,7 @@ fn find_forward_end(
     return null;
 }
 
-fn find_backward_start(
+fn findBackwardStart(
     comptime query_is_folded: bool,
     match_query: []const u8,
     candidate: []const u8,
@@ -257,7 +257,8 @@ fn find_backward_start(
     while (query_index > 0) {
         candidate_index -= 1;
 
-        if (!equal_fold(query_is_folded, candidate[candidate_index], match_query[query_index - 1])) continue;
+        const candidate_byte = candidate[candidate_index];
+        if (!equalFold(query_is_folded, candidate_byte, match_query[query_index - 1])) continue;
 
         query_index -= 1;
     }
@@ -266,7 +267,7 @@ fn find_backward_start(
     return candidate_index;
 }
 
-fn enumerate_match_queries(
+fn enumerateMatchQueries(
     alphabet: []const u8,
     candidate: []const u8,
     query: []u8,
@@ -280,35 +281,35 @@ fn enumerate_match_queries(
 
     for (alphabet) |byte| {
         query[query_index] = byte;
-        try enumerate_match_queries(alphabet, candidate, query, query_index + 1);
+        try enumerateMatchQueries(alphabet, candidate, query, query_index + 1);
     }
 }
 
-fn enumerate_match_candidates(
+fn enumerateMatchCandidates(
     alphabet: []const u8,
     candidate: []u8,
     query: []u8,
     candidate_index: usize,
 ) !void {
     if (candidate_index == candidate.len) {
-        try enumerate_match_queries(alphabet, candidate, query, 0);
+        try enumerateMatchQueries(alphabet, candidate, query, 0);
         return;
     }
 
     for (alphabet) |byte| {
         candidate[candidate_index] = byte;
-        try enumerate_match_candidates(alphabet, candidate, query, candidate_index + 1);
+        try enumerateMatchCandidates(alphabet, candidate, query, candidate_index + 1);
     }
 }
 
-fn expect_matches_rank_equivalent(
+fn expectMatchesRankEquivalent(
     alphabet: []const u8,
     candidate_len: usize,
     query_len: usize,
 ) !void {
     var candidate: [4]u8 = undefined;
     var query: [4]u8 = undefined;
-    try enumerate_match_candidates(
+    try enumerateMatchCandidates(
         alphabet,
         candidate[0..candidate_len],
         query[0..query_len],
@@ -316,18 +317,20 @@ fn expect_matches_rank_equivalent(
     );
 }
 
-fn boundary_bonus(candidate: []const u8, index: usize) i32 {
-    if (index == 0) return BONUS_BOUNDARY_START;
+fn boundaryBonus(candidate: []const u8, index: usize) i32 {
+    if (index == 0) return bonus_boundary_start;
 
     const previous = candidate[index - 1];
-    const boundary_bonus_value = BOUNDARY_BONUSES[previous];
+    const boundary_bonus_value = boundary_bonuses[previous];
     if (boundary_bonus_value != 0) return boundary_bonus_value;
 
-    if (std.ascii.isLower(previous) and std.ascii.isUpper(candidate[index])) return BONUS_CAMEL_CASE;
+    if (std.ascii.isLower(previous) and std.ascii.isUpper(candidate[index])) {
+        return bonus_camel_case;
+    }
     return 0;
 }
 
-fn equal_fold(comptime query_is_folded: bool, left: u8, right: u8) bool {
+fn equalFold(comptime query_is_folded: bool, left: u8, right: u8) bool {
     if (left == right) return true;
     if (query_is_folded) {
         return right >= 'a' and right <= 'z' and left == right - ('a' - 'A');
@@ -354,28 +357,28 @@ test "matches uses forward case-insensitive subsequence matching" {
 }
 
 test "matches agrees with rank across mixed-case delimiters" {
-    try expect_matches_rank_equivalent("aA-_", 4, 4);
+    try expectMatchesRankEquivalent("aA-_", 4, 4);
 }
 
 test "matches agrees with rank when queries exceed candidates" {
     try std.testing.expectEqual(rank("", "") != null, matches("", ""));
     try std.testing.expectEqual(rank("a", "") != null, matches("a", ""));
-    try expect_matches_rank_equivalent("bB/.", 2, 4);
+    try expectMatchesRankEquivalent("bB/.", 2, 4);
 }
 
 test "boundary bonuses preserve separator classes" {
-    try std.testing.expectEqual(@as(i32, 32), boundary_bonus("a", 0));
-    try std.testing.expectEqual(@as(i32, 30), boundary_bonus("/a", 1));
-    try std.testing.expectEqual(@as(i32, 26), boundary_bonus(" a", 1));
-    try std.testing.expectEqual(@as(i32, 20), boundary_bonus("-a", 1));
-    try std.testing.expectEqual(@as(i32, 18), boundary_bonus("aA", 1));
-    try std.testing.expectEqual(@as(i32, 0), boundary_bonus("aa", 1));
+    try std.testing.expectEqual(@as(i32, 32), boundaryBonus("a", 0));
+    try std.testing.expectEqual(@as(i32, 30), boundaryBonus("/a", 1));
+    try std.testing.expectEqual(@as(i32, 26), boundaryBonus(" a", 1));
+    try std.testing.expectEqual(@as(i32, 20), boundaryBonus("-a", 1));
+    try std.testing.expectEqual(@as(i32, 18), boundaryBonus("aA", 1));
+    try std.testing.expectEqual(@as(i32, 0), boundaryBonus("aa", 1));
 }
 
 test "positions use the compact alignment" {
-    var output: [2]u16 = undefined;
+    var output: [2]usize = undefined;
     const matched = positions("ab", "a---ab", &output).?;
-    try std.testing.expectEqualSlices(u16, &.{ 4, 5 }, matched);
+    try std.testing.expectEqualSlices(usize, &.{ 4, 5 }, matched);
 }
 
 test "prefix matches outrank scattered alternatives" {
@@ -398,13 +401,13 @@ test "identical prefixes keep identical scores" {
 
 test "prefix alignment preserves score range and positions" {
     const regular = rank("foo", "foobar").?;
-    var output: [3]u16 = undefined;
-    const folded = rank_folded_positions("FOO", "foo", "FOO-tools", &output).?;
+    var output: [3]usize = undefined;
+    const folded = rankFoldedPositions("FOO", "foo", "FOO-tools", &output).?;
 
     try std.testing.expectEqual(regular.score, folded.score);
     try std.testing.expectEqual(@as(usize, 0), folded.start);
     try std.testing.expectEqual(@as(usize, 3), folded.end);
-    try std.testing.expectEqualSlices(u16, &.{ 0, 1, 2 }, output[0..3]);
+    try std.testing.expectEqualSlices(usize, &.{ 0, 1, 2 }, output[0..3]);
 }
 
 test "rank positions preserve alignment invariants" {
@@ -415,7 +418,7 @@ test "rank positions preserve alignment invariants" {
     };
 
     for (cases) |case| {
-        var output: [16]u16 = undefined;
+        var output: [16]usize = undefined;
         const result = rank(case.query, case.candidate).?;
         const matched = positions(case.query, case.candidate, &output).?;
 
@@ -447,18 +450,18 @@ test "folded query preserves ranking and positions" {
     const candidate = "Scout-9";
 
     const regular = rank(query, candidate).?;
-    const folded = rank_folded(query, folded_query, candidate).?;
+    const folded = rankFolded(query, folded_query, candidate).?;
     try std.testing.expectEqual(regular, folded);
 
-    var regular_output: [2]u16 = undefined;
-    var folded_output: [2]u16 = undefined;
-    var fused_output: [2]u16 = undefined;
+    var regular_output: [2]usize = undefined;
+    var folded_output: [2]usize = undefined;
+    var fused_output: [2]usize = undefined;
     const regular_positions = positions(query, candidate, &regular_output).?;
-    const folded_positions = positions_folded(query, folded_query, candidate, &folded_output).?;
-    const fused = rank_folded_positions(query, folded_query, candidate, &fused_output).?;
+    const folded_positions = positionsFolded(query, folded_query, candidate, &folded_output).?;
+    const fused = rankFoldedPositions(query, folded_query, candidate, &fused_output).?;
     try std.testing.expectEqual(folded, fused);
-    try std.testing.expectEqualSlices(u16, regular_positions, folded_positions);
-    try std.testing.expectEqualSlices(u16, folded_positions, &fused_output);
+    try std.testing.expectEqualSlices(usize, regular_positions, folded_positions);
+    try std.testing.expectEqualSlices(usize, folded_positions, &fused_output);
 }
 
 test "empty query matches every candidate" {

@@ -12,10 +12,10 @@ Download the archive for your platform from the
 [latest release](https://github.com/lumertzg/scout/releases/latest), extract it,
 and place `scout` somewhere on `PATH`.
 
-To build from source, install Zig 0.16 and run:
+To build from source, install Zig 0.17 and run:
 
 ```sh
-zig build -Doptimize=ReleaseFast
+zig build -Doptimize=fast
 mkdir -p ~/.local/bin
 install -m 755 zig-out/bin/scout ~/.local/bin/scout
 ```
@@ -83,6 +83,11 @@ SCOUT_PATH="$HOME/Code" SCOUT_BACKEND=tmux scout
 attaches to Herdr when needed. When already running inside Herdr, Scout switches
 workspaces without nesting another client. `HERDR_SOCKET_PATH` and
 `HERDR_SESSION` select a non-default Herdr session.
+
+Existing workspaces appear under their Herdr labels and are focused by workspace
+ID. Queries match workspace labels before project folders, so a workspace label
+can differ from its folder name. Project folders remain available for opening
+new workspaces.
 
 ```sh
 SCOUT_BACKEND=herdr scout
