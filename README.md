@@ -20,6 +20,12 @@ mkdir -p ~/.local/bin
 install -m 755 zig-out/bin/scout ~/.local/bin/scout
 ```
 
+Or, with [mise](https://mise.jdx.dev/), build and install to `~/.local/bin`:
+
+```sh
+mise run install
+```
+
 ## Shell integration
 
 The default `path` backend prints the selected project. Add a helper to your
