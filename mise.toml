@@ -7,3 +7,7 @@ run = "ziglint"
 
 [tasks.test]
 run = "zig build test"
+
+[tasks.install]
+description = "Build and install scout to ~/.local/bin"
+run = 'zig build -Doptimize=fast --prefix "$HOME/.local"'
